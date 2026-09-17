@@ -1,0 +1,31 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/health"
+  status = 200
+
+[[redirects]]
+  from = "/api/teams"
+  to = "/.netlify/functions/teams"
+  status = 200
+
+[[redirects]]
+  from = "/api/team-mapping"
+  to = "/.netlify/functions/team-mapping"
+  status = 200
+
+[[redirects]]
+  from = "/api/odds"
+  to = "/.netlify/functions/odds"
+  status = 200
+
+[[redirects]]
+  from = "/api/predict"
+  to = "/.netlify/functions/predict"
+  status = 200
