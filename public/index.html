@@ -283,10 +283,17 @@ function renderResult(d,event){
 
   const value=document.querySelector('#value');
   const rec=document.querySelector('#rec');
-  if(d.is_actionable){
-    value.textContent=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
-    rec.textContent=d.recommendation;
-    rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
+  if(d.value_available){
+    const valueText=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
+    if(d.limited_reliability||d.value_informational_only){
+      value.textContent='Informativně '+valueText+' – omezená spolehlivost';
+      rec.textContent='BEZ DOPORUČENÍ';
+      rec.className='badge text-bg-warning';
+    }else{
+      value.textContent=valueText;
+      rec.textContent=d.recommendation;
+      rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
+    }
   }else{
     if(d.odds_mode==='demo'){
       value.textContent='Nedostupný – nejsou dostupné reálné kurzy';
