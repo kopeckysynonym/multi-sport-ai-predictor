@@ -12,6 +12,11 @@ import {
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
 import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
+import {
+  calculateTennisModelFromMatches,
+  classifyTennisDataAvailability,
+  tennisSurfaceFromSportKey
+} from '../netlify/functions/lib/tennis.mjs';
 
 const originalFetch = global.fetch;
 const originalFootballKey = process.env.API_FOOTBALL_KEY;
@@ -244,4 +249,43 @@ test('Prediction Tracker snapshot contains required pre-match fields', () => {
   assert.deepEqual(snapshot.predicted_score, { home: 118.4, away: 113.2 });
   assert.equal(snapshot.reliability.label, 'STANDARDNÍ SPOLEHLIVOST');
   assert.equal(snapshot.is_pre_match, true);
+});
+
+
+test('tennis surface detection maps major tournaments correctly', () => {
+  assert.equal(tennisSurfaceFromSportKey('tennis_atp_french_open', 'French Open'), 'Clay');
+  assert.equal(tennisSurfaceFromSportKey('tennis_atp_wimbledon', 'Wimbledon'), 'Grass');
+  assert.equal(tennisSurfaceFromSportKey('tennis_wta_us_open', 'US Open'), 'Hard');
+});
+
+test('tennis rolling Elo model favors player with stronger recent results', () => {
+  const matches = [
+    { date: '2026-01-01T12:00:00Z', surface: 'Hard', winner: 'Player A', loser: 'Player C' },
+    { date: '2026-02-01T12:00:00Z', surface: 'Hard', winner: 'Player A', loser: 'Player D' },
+    { date: '2026-03-01T12:00:00Z', surface: 'Hard', winner: 'Player A', loser: 'Player E' },
+    { date: '2026-04-01T12:00:00Z', surface: 'Hard', winner: 'Player A', loser: 'Player F' },
+    { date: '2026-05-01T12:00:00Z', surface: 'Hard', winner: 'Player G', loser: 'Player B' },
+    { date: '2026-06-01T12:00:00Z', surface: 'Hard', winner: 'Player H', loser: 'Player B' },
+    { date: '2026-07-01T12:00:00Z', surface: 'Hard', winner: 'Player I', loser: 'Player B' },
+    { date: '2026-08-01T12:00:00Z', surface: 'Hard', winner: 'Player J', loser: 'Player B' }
+  ];
+
+  const model = calculateTennisModelFromMatches(matches, 'Player A', 'Player B', 'Hard');
+  assert.ok(model.probability_a > 0.5);
+  assert.ok(model.player_a.elo > model.player_b.elo);
+  assert.ok(model.player_a.surface_elo > model.player_b.surface_elo);
+});
+
+test('tennis availability uses rolling 12-month thresholds instead of season reset', () => {
+  assert.equal(classifyTennisDataAvailability(4, 12).analysis_available, false);
+  assert.equal(classifyTennisDataAvailability(5, 9).data_status, 'OMEZENÁ SPOLEHLIVOST');
+  assert.equal(
+    classifyTennisDataAvailability(
+      12,
+      15,
+      '2026-09-01T12:00:00Z',
+      '2026-09-20T12:00:00Z'
+    ).data_status,
+    'PŘIPRAVENO'
+  );
 });
