@@ -66,3 +66,26 @@ GET /api/upcoming?sport=nhl
 The selected event is sent to `POST /api/predict` as `fixture`, so the prediction, kickoff time and odds refer to the same real event.
 
 For Czech football, `API_FOOTBALL_CZ_LEAGUE_ID` can optionally override the default league ID (`345`).
+
+
+## NBA live team metrics
+
+NBA predictions now load the latest 10 completed games for both teams from ESPN's public NBA schedule and game-summary endpoints.
+
+For each team the backend calculates:
+
+- last-10 W-L record
+- points scored per game
+- points allowed per game
+- home form and road form
+- estimated possessions / pace
+- offensive rating = 100 × points / estimated possessions
+- defensive rating = 100 × opponent points / opponent estimated possessions
+
+Estimated possessions use the standard box-score approximation:
+
+```
+FGA + 0.44 * FTA - OREB + TOV
+```
+
+The NBA prediction model combines both teams' last-10 pace and offensive/defensive ratings, then blends in the home team's home form and the away team's road form. There is no league-average prediction fallback: if enough real game/boxscore data cannot be loaded, the prediction endpoint returns an explicit data error instead of generating a betting recommendation.
