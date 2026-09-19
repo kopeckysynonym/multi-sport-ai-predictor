@@ -410,12 +410,18 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
   const dataAgeDays = latestGameTime && targetTime
     ? Math.max(0, Math.round((targetTime - latestGameTime) / 86400000))
     : null;
-  const limitedReliability = Number.isFinite(dataAgeDays) && dataAgeDays > 120;
+  const incompleteCurrentSeasonSample = a.matches_used < 10 || b.matches_used < 10;
+  const limitedReliability =
+    (Number.isFinite(dataAgeDays) && dataAgeDays > 120) ||
+    incompleteCurrentSeasonSample;
+  const commonSeasonLabel = a.season_label === b.season_label
+    ? a.season_label
+    : [a.season_label,b.season_label].filter(Boolean).join(' / ');
 
   return {
     sport: 'nba',
     sport_label: SPORT_LABELS.nba,
-    model: 'Last-10 pace + offensive/defensive rating + home/away form',
+    model: 'Current-season up-to-10 pace + offensive/defensive rating + home/away form',
     team_a: aName,
     team_b: bName,
     selected_fixture: selectedFixture,
@@ -427,7 +433,10 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
     ...bettingFields({ values, best, used, actionable, limitedReliability }),
-    data_mode: 'espn-nba-last10',
+    data_mode: 'espn-nba-current-season-last10',
+    data_season_label: commonSeasonLabel || null,
+    current_season_only: true,
+    current_season_sample_complete: !incompleteCurrentSeasonSample,
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
@@ -443,7 +452,7 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
       team_a: a,
       team_b: b
     },
-    data_source_note: 'ESPN NBA game summaries; pace a offensive/defensive rating jsou dopočítané z boxscore possessions.',
+    data_source_note: 'Pouze aktuální NBA sezona; maximálně 10 posledních dokončených zápasů. Starší sezony jsou vyřazené. Pace a offensive/defensive rating jsou dopočítané z ESPN boxscore possessions.',
     data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
