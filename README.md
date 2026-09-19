@@ -195,3 +195,18 @@ Betting output is split into two different metrics:
 The selected market is chosen by the highest Expected ROI. Recommendation logic uses Expected ROI rather than Edge. When reliability is limited, both metrics remain informational only and no `SÁZET` recommendation is emitted.
 
 Prediction Tracker schema v2 stores `edge_pct` and `expected_roi_pct` separately.
+
+
+## Automatic result settlement
+
+Prediction Tracker now settles completed paper bets automatically.
+
+- A Netlify scheduled function runs hourly on production deploys.
+- The Odds API scores endpoint is used for tracked events that have a stored `sport_key` and event ID.
+- Czech football can fall back to API-Football using its fixture ID.
+- Each settled record stores the actual score/result and a simulated 1-unit bet result.
+- Simulated profit is `decimal_odds - 1` units for a win, `-1` unit for a loss, and `0` for a push.
+- Tracker API aggregates settled bets into wins/losses/pushes, total simulated profit, total simulated stake, and running ROI.
+- Running ROI is `total_profit_units / total_stake_units * 100`.
+
+The Odds API scores endpoint only exposes recently completed games for up to three days, so the scheduled settlement process is intended to capture results shortly after matches finish.
