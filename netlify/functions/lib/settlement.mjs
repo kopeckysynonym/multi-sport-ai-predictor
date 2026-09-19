@@ -128,26 +128,7 @@ function chanceLigaPlainText(html) {
 }
 
 function regexEscape(value) {
-  return String(value || '').replace(/[.*+?^$(){}|[\]\\]/g, '\\function outcomeFromScore(snapshot, score) {
-  const market = snapshot?.tracked_market;
-  if (!market || !score) return null;
-
-  const homeWon = score.home > score.away;
-  const awayWon = score.away > score.home;
-  const draw = score.home === score.away;
-
-  if (market === 'draw') return draw ? 'WIN' : 'LOSS';
-  if (market === 'home' || market === 'home_moneyline') {
-    if (draw && market === 'home_moneyline') return 'PUSH';
-    return homeWon ? 'WIN' : 'LOSS';
-  }
-  if (market === 'away' || market === 'away_moneyline') {
-    if (draw && market === 'away_moneyline') return 'PUSH';
-    return awayWon ? 'WIN' : 'LOSS';
-  }
-  return null;
-}
-');
+  return String(value || '').replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
 }
 
 export function extractChanceLigaScoreFromHtml(html, snapshot) {
