@@ -622,7 +622,13 @@ function trackerOdds(value){
   return n.toFixed(2);
 }
 
-function trackerScore(score){
+function trackerScore(score,row=null){
+  if(row?.predicted_winner){
+    const pct=Number.isFinite(Number(row.predicted_winner_probability_pct))
+      ? ' ('+Number(row.predicted_winner_probability_pct).toFixed(1)+' %)'
+      : '';
+    return row.predicted_winner+pct;
+  }
   if(!score||score.home==null||score.away==null)return '–';
   return score.home+' : '+score.away;
 }
@@ -658,7 +664,7 @@ async function loadTrackerHistory(){
         <td>${trackerOdds(row.tracked_odds)}</td>
         <td>${trackerPercent(row.model_probability_pct)}</td>
         <td>${value}</td>
-        <td>${trackerScore(row.predicted_score)}</td>
+        <td>${trackerScore(row.predicted_score,row)}</td>
         <td>${reliability}</td>
       </tr>`;
     }).join('');
