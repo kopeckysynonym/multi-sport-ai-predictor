@@ -33,12 +33,29 @@ export default async request => {
           };
         } catch (sharePointError) {
           console.warn('SharePoint prediction sync failed:', sharePointError.message);
+          const snapshotWithSyncError = {
+            ...tracker.snapshot,
+            sharepoint_sync: {
+              status: 'FAILED',
+              code: sharePointError.code || 'SHAREPOINT_SYNC_FAILED',
+              message: sharePointError.message,
+              graph_status: sharePointError?.details?.graph_status ?? null,
+              failed_at: new Date().toISOString(),
+            },
+          };
+          try {
+            await updatePredictionSnapshot(tracker.key, snapshotWithSyncError);
+          } catch (persistError) {
+            console.warn('SharePoint sync diagnostic persist failed:', persistError.message);
+          }
           tracker = {
             ...tracker,
+            snapshot: snapshotWithSyncError,
             sharepoint: {
               synced: false,
               reason: sharePointError.code || 'SHAREPOINT_SYNC_FAILED',
               message: sharePointError.message,
+              graph_status: sharePointError?.details?.graph_status ?? null,
             },
           };
         }
