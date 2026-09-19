@@ -194,10 +194,16 @@ export async function loadApiFootballCzOdds(teamA,teamB){
   const payload=await apiFootball('odds',{fixture:fixtureId,bet:1});
   const summary=summarizeApiFootballMatchWinner(payload);
   if(!(summary.home&&summary.draw&&summary.away)){
-    throw new ProviderError(
+    const error=new ProviderError(
       'API-Football pro tento zápas zatím neposkytuje kompletní 1X2 pre-match kurzy.',
       {status:404,code:'ODDS_NOT_AVAILABLE'}
     );
+    error.fixtureMeta={
+      fixture_id:fixtureId,
+      commence_time:exact?.fixture?.date||null,
+      provider:'API-Football'
+    };
+    throw error;
   }
 
   return {
