@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApiFootballCzOdds, summarizeApiFootballMatchWinner } from '../netlify/functions/lib/providers.mjs';
-import { predictNba } from '../netlify/functions/lib/predictor.mjs';
+import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
 
 const originalFetch = global.fetch;
 const originalFootballKey = process.env.API_FOOTBALL_KEY;
@@ -84,13 +84,36 @@ test('loads Czech 1X2 odds from API-Football for the selected home-away fixture'
   assert.equal(odds.provider, 'API-Football');
 });
 
-test('demo odds never produce an actionable betting recommendation', async () => {
-  process.env.LIVE_DATA_ENABLED = 'false';
-  const result = await predictNba('Boston Celtics', 'Denver Nuggets');
-  assert.equal(result.odds_mode, 'demo');
+test('demo odds never produce an actionable betting recommendation', () => {
+  const result = bettingFields({
+    values: { home: 5.2, away: -5.2 },
+    best: ['home', 5.2],
+    used: { home: 1.9, away: 2.0 },
+    actionable: false,
+    limitedReliability: false
+  });
   assert.equal(result.is_actionable, false);
+  assert.equal(result.value_available, false);
   assert.equal(result.recommendation, 'BEZ DOPORUČENÍ');
   assert.equal(result.best_value_pct, null);
   assert.equal(result.market_odds, null);
   assert.ok(result.demo_market_odds);
+});
+
+test('limited reliability keeps real value bet informational and blocks SÁZET', () => {
+  const result = bettingFields({
+    values: { home_moneyline: 9.5, away_moneyline: -9.5 },
+    best: ['home_moneyline', 9.5],
+    used: { home: 2.1, away: 1.8 },
+    actionable: true,
+    limitedReliability: true
+  });
+  assert.equal(result.value_available, true);
+  assert.equal(result.value_informational_only, true);
+  assert.equal(result.best_value_pct, 9.5);
+  assert.equal(result.is_actionable, false);
+  assert.equal(result.recommendation_allowed, false);
+  assert.equal(result.recommendation, 'BEZ DOPORUČENÍ');
+  assert.equal(result.recommendation_block_reason, 'OMEZENÁ SPOLEHLIVOST');
+  assert.deepEqual(result.market_odds, { home: 2.1, away: 1.8 });
 });
