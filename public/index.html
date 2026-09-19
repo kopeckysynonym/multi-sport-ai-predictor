@@ -196,7 +196,12 @@ async function predict(){
       rec.textContent='DEMO – BEZ DOPORUČENÍ';
       rec.className='badge text-bg-warning';
     }
-    document.querySelector('#probs').innerHTML=Object.entries(d.probabilities).map(([k,v])=>`<div>${k}: <strong>${v}%</strong></div>`).join('');
+    const probabilityNote=d.limited_reliability
+      ? ' <span class="muted">Modelová pravděpodobnost – vychází ze starších dat</span>'
+      : '';
+    document.querySelector('#probs').innerHTML=Object.entries(d.probabilities)
+      .map(([k,v])=>`<div>${k}: <strong>${v}%</strong>${probabilityNote}</div>`)
+      .join('');
     document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
     showDiagnostics(d);
     res.classList.remove('d-none');
