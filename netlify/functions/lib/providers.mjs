@@ -497,7 +497,8 @@ function cacheSet(key,value,ttlMs=5*60*1000){
 
 function eventTime(value){
   const time=Date.parse(value||0);
-  return Number.isFinite(time)?time:0;}
+  return Number.isFinite(time)?time:0;
+}
 
 function normalizeUpcomingEvent(item,provider,sportKey=null){
   const fixtureId=item?.fixture?.id??null;
@@ -1025,7 +1026,8 @@ export async function loadNbaTeamStats(teamName,targetDate){
     boxscores_used:gameMetrics.length,
     range:{
       from:Number.isFinite(firstTime)?new Date(firstTime).toISOString():null,
-      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null    },
+      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null
+    },
     wins,
     losses:games.length-wins,
     win_pct:roundMetric(100*wins/games.length,1),
@@ -1474,7 +1476,8 @@ async function listOddsUpcoming(sport){
   if(cached)return cached;
 
   const sports=sport==='fifa'
-    ? await fetchOddsSports(true)    : sport==='tennis'
+    ? await fetchOddsSports(true)
+    : sport==='tennis'
       ? await fetchOddsSports(false)
       : [];
   const keys=oddsSportKeysForCategory(sport,sports);
