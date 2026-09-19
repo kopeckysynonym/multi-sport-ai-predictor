@@ -3,9 +3,12 @@ import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round
 import {
   fetchEventOdds,
   findMatchOdds,
+  fifaSeasonForFixture,
+  fifaSeasonLabelForFixture,
   getOddsTeamName,
   liveDataEnabled,
   loadApiFootballCzOdds,
+  loadFifaTeamCurrentSeasonData,
   loadLiveFootballTeamData,
   loadNbaTeamStats,
   loadNhlTeamStats,
@@ -83,7 +86,7 @@ function footballFallback(sport, team) {
   };
 }
 
-async function loadTeamData(sport, team) {
+async function loadTeamData(sport, team, selectedFixture = null) {
   const fallback = footballFallback(sport, team);
 
   if (!liveDataEnabled()) {
@@ -94,7 +97,23 @@ async function loadTeamData(sport, team) {
     };
   }
 
-  if (['cz_football', 'fifa'].includes(sport)) {
+  if (sport === 'fifa') {
+    if (!process.env.API_FOOTBALL_KEY) {
+      throw Object.assign(new Error('Chybí API_FOOTBALL_KEY.'), {
+        status: 503,
+        code: 'MISSING_KEY'
+      });
+    }
+    const fixture = selectedFixture || { commence_time: new Date().toISOString() };
+    const data = await loadFifaTeamCurrentSeasonData(team, fixture, 10);
+    return {
+      data,
+      mode: data.source_mode || 'api-football-current-season',
+      diagnostic: null,
+    };
+  }
+
+  if (sport === 'cz_football') {
     if (!process.env.API_FOOTBALL_KEY) {
       return {
         data: fallback,
@@ -232,7 +251,10 @@ async function loadLiveOdds(sport, teamA, teamB, selectedFixture = null) {
 }
 
 export async function predictFootball(sport, aName, bName, supplied = null, selectedFixture = null) {
-  const [al, bl] = await Promise.all([loadTeamData(sport, aName), loadTeamData(sport, bName)]);
+  const [al, bl] = await Promise.all([
+    loadTeamData(sport, aName, selectedFixture),
+    loadTeamData(sport, bName, selectedFixture)
+  ]);
   const a = al.data;
   const b = bl.data;
 
@@ -272,9 +294,13 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
     : null;
 
   const matchDate = selectedFixture?.commence_time || liveResult?.meta?.commence_time || null;
-  const targetSeasonStart = seasonStartFromFixtureDate(sport, matchDate, aName, bName)
-    ?? currentSeasonStart(sport, aName, bName);
-  const targetSeasonLabel = formatSeason(sport, targetSeasonStart, aName, bName);
+  const targetSeasonStart = sport === 'fifa'
+    ? fifaSeasonForFixture(selectedFixture || { commence_time: matchDate })
+    : seasonStartFromFixtureDate(sport, matchDate, aName, bName)
+      ?? currentSeasonStart(sport, aName, bName);
+  const targetSeasonLabel = sport === 'fifa'
+    ? fifaSeasonLabelForFixture(targetSeasonStart, selectedFixture || { commence_time: matchDate })
+    : formatSeason(sport, targetSeasonStart, aName, bName);
 
   const ranges = [
     a?.historical_match_range ? { team: aName, ...a.historical_match_range } : null,
@@ -292,8 +318,12 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
 
   const latestDataSeason = dataSeasons.length ? Math.max(...dataSeasons) : null;
   const dataAgeSeasons = latestDataSeason == null ? null : Math.max(0, targetSeasonStart - latestDataSeason);
-  const limitedReliability = Number.isFinite(dataAgeSeasons) && dataAgeSeasons > 1;
-  const reliabilityLabel = dataAgeSeasons == null
+  const incompleteCurrentSeasonSample =
+    sport === 'fifa' && (Number(a.matches_used) < 10 || Number(b.matches_used) < 10);
+  const limitedReliability =
+    (Number.isFinite(dataAgeSeasons) && dataAgeSeasons > 1) ||
+    incompleteCurrentSeasonSample;
+  const reliabilityLabel = dataAgeSeasons == null && sport !== 'fifa'
     ? null
     : limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST';
 
@@ -313,6 +343,10 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
     data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-')
       ? (al.mode === bl.mode ? al.mode : 'api-football-mixed')
       : 'demo-synthetic',
+    current_season_only: sport === 'fifa',
+    current_season_sample_complete: sport === 'fifa'
+      ? Number(a.matches_used) >= 10 && Number(b.matches_used) >= 10
+      : null,
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     data_seasons: dataSeasons,
@@ -328,6 +362,13 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
       team_a: Number.isFinite(Number(a.matches_used)) ? Number(a.matches_used) : null,
       team_b: Number.isFinite(Number(b.matches_used)) ? Number(b.matches_used) : null,
     },
+    fifa_team_stats: sport === 'fifa' ? {
+      team_a: a,
+      team_b: b
+    } : null,
+    data_source_note: sport === 'fifa'
+      ? 'Pouze aktuální FIFA/UEFA sezona nebo turnajový ročník; maximálně 10 posledních dokončených zápasů. Starší sezony se nepoužívají.'
+      : undefined,
     data_diagnostics: dataDiagnostics,
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
