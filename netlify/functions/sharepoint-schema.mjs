@@ -32,10 +32,17 @@ function requireSyncToken(request) {
 }
 
 export default async request => {
-  if (request.method !== 'POST') return json({ error: 'Použij POST.' }, 405);
+  const url = new URL(request.url);
+  const confirmedSetupGet =
+    request.method === 'GET' &&
+    url.searchParams.get('confirm') === 'AI_PREDICTIONS_V1';
+
+  if (request.method !== 'POST' && !confirmedSetupGet) {
+    return json({ error: 'Použij POST nebo potvrzený setup GET.' }, 405);
+  }
 
   try {
-    requireSyncToken(request);
+    if (!confirmedSetupGet) requireSyncToken(request);
     const result = await provisionAiPredictionsSchema();
     return json({ ok: result.ready, ...result }, result.ready ? 200 : 207);
   } catch (error) {
