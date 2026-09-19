@@ -560,6 +560,45 @@ async function listCzFootballViaHeadToHead(leagueId){
   return [...new Map(rows.map(row=>[String(row?.fixture?.id),row])).values()];
 }
 
+async function listCzFootballViaOdds(){
+  const sports=await fetchOddsSports(false);
+  const discovered=(sports||[])
+    .filter(row=>String(row?.group||'').toLowerCase().includes('soccer'))
+    .filter(row=>{
+      const key=String(row?.key||'').toLowerCase();
+      const title=String(row?.title||'').toLowerCase();
+      const czech=key.includes('czech')||title.includes('czech');
+      const firstLeague=
+        key.includes('1_liga')||
+        key.includes('first_league')||
+        title.includes('1. liga')||
+        title.includes('1 liga')||
+        title.includes('first league');
+      return czech&&firstLeague;
+    })
+    .map(row=>String(row?.key||''))
+    .filter(Boolean);
+
+  const keys=[...new Set(['soccer_czech_republic_1_liga',...discovered])];
+  const results=await Promise.allSettled(keys.map(async key=>({
+    key,
+    events:await fetchOddsEvents(key)
+  })));
+
+  const now=Date.now();
+  const events=[];
+  for(const result of results){
+    if(result.status!=='fulfilled')continue;
+    for(const item of result.value.events||[]){
+      const event=normalizeUpcomingEvent(item,'the-odds-api',result.value.key);
+      if(event&&eventTime(event.commence_time)>=now)events.push(event);
+    }
+  }
+
+  events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+  return [...new Map(events.map(event=>[event.provider+':'+event.id,event])).values()];
+}
+
 async function listCzFootballUpcoming(){
   const cacheKey='upcoming:cz_football';
   const cached=cacheGet(cacheKey);
@@ -571,18 +610,16 @@ async function listCzFootballUpcoming(){
     345
   );
   const seasonOverride=globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_SEASON')||process.env.API_FOOTBALL_CZ_SEASON;
-  const season=/^\d{4}$/.test(String(seasonOverride||''))
+  const season=/^\\d{4}$/.test(String(seasonOverride||''))
     ? Number(seasonOverride)
     : czFootballSeasonStart();
   const from=utcDateOffset(0);
   const to=utcDateOffset(35);
 
   let rows=[];
-  let lastError=null;
   const attempts=[
     {label:'league-season-window',params:{league:leagueId,season,from,to}},
-    {label:'league-window',params:{league:leagueId,from,to}},
-    {label:'league-next',params:{league:leagueId,next:30}}
+    {label:'league-window',params:{league:leagueId,from,to}}
   ];
 
   for(const attempt of attempts){
@@ -591,29 +628,49 @@ async function listCzFootballUpcoming(){
       rows=payload?.response||[];
       if(rows.length)break;
     }catch(error){
-      lastError=error;
-      console.warn(`Czech league ${attempt.label} lookup failed:`,error.message);
+      console.warn('Czech league '+attempt.label+' lookup failed:',error.message);
     }
   }
 
-  if(!rows.length){
+  const normalizeApiFootballRows=input=>{
+    const now=Date.now();
+    return (input||[])
+      .filter(row=>!['CANC','PST','ABD','AWD','WO'].includes(String(row?.fixture?.status?.short||'').toUpperCase()))
+      .map(row=>normalizeUpcomingEvent(row,'api-football'))
+      .filter(Boolean)
+      .filter(event=>eventTime(event.commence_time)>=now)
+      .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+  };
+
+  let events=normalizeApiFootballRows(rows);
+
+  if(!events.length){
     try{
-      rows=await listCzFootballViaHeadToHead(leagueId);
+      events=await listCzFootballViaOdds();
     }catch(error){
-      if(lastError)throw lastError;
-      throw error;
+      console.warn('Czech league The Odds API fallback failed:',error.message);
     }
   }
 
-  const now=Date.now();
-  const events=rows
-    .filter(row=>!['CANC','PST','ABD','AWD','WO'].includes(String(row?.fixture?.status?.short||'').toUpperCase()))
-    .map(row=>normalizeUpcomingEvent(row,'api-football'))
-    .filter(Boolean)
-    .filter(event=>eventTime(event.commence_time)>=now)
-    .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+  if(!events.length){
+    try{
+      events=normalizeApiFootballRows(await listCzFootballViaHeadToHead(leagueId));
+    }catch(error){
+      console.warn('Czech league head-to-head fallback failed:',error.message);
+    }
+  }
 
-  const unique=[...new Map(events.map(event=>[String(event.fixture_id||event.id),event])).values()];
+  if(!events.length){
+    throw new ProviderError(
+      'Nepodařilo se načíst nadcházející zápasy české ligy z dostupných zdrojů.',
+      {status:502,code:'CZ_UPCOMING_UNAVAILABLE'}
+    );
+  }
+
+  const unique=[...new Map(events.map(event=>[
+    event.fixture_id?'api-football:'+event.fixture_id:event.provider+':'+event.id,
+    event
+  ])).values()];
   return cacheSet(cacheKey,unique.slice(0,30),10*60*1000);
 }
 
