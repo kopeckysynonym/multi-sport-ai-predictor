@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyNbaDataAvailability,
+  classifyNhlDataAvailability,
   loadApiFootballCzOdds,
   nbaCurrentSeasonScheduleQueries,
+  nhlSeasonId,
   summarizeApiFootballMatchWinner
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
@@ -147,4 +149,22 @@ test('NBA upcoming availability blocks analysis when either team has 0-2 current
   assert.equal(classifyNbaDataAvailability(3, 9).analysis_available, true);
   assert.equal(classifyNbaDataAvailability(3, 9).data_status, 'OMEZENÁ SPOLEHLIVOST');
   assert.equal(classifyNbaDataAvailability(10, 12).data_status, 'PŘIPRAVENO');
+});
+
+
+test('NHL upcoming availability blocks analysis when either team has 0-2 current-season games', () => {
+  assert.equal(nhlSeasonId('2026-10-20T19:00:00Z'), 20262027);
+  assert.equal(nhlSeasonId('2027-02-10T19:00:00Z'), 20262027);
+
+  const blocked = classifyNhlDataAvailability(2, 7);
+  assert.equal(blocked.analysis_available, false);
+  assert.equal(blocked.data_status, 'NEDOSTATEK DAT');
+
+  const limited = classifyNhlDataAvailability(4, 8);
+  assert.equal(limited.analysis_available, true);
+  assert.equal(limited.data_status, 'OMEZENÁ SPOLEHLIVOST');
+
+  const ready = classifyNhlDataAvailability(10, 12);
+  assert.equal(ready.analysis_available, true);
+  assert.equal(ready.data_status, 'PŘIPRAVENO');
 });
