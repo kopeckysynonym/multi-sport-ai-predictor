@@ -3,7 +3,11 @@ import { getDeployStore, getStore } from '@netlify/blobs';
 const STORE_NAME = 'prediction-tracker';
 
 function isProductionDeploy() {
-  return globalThis.Netlify?.context?.deploy?.context === 'production';
+  const context =
+    globalThis.Netlify?.context?.deploy?.context ||
+    globalThis.Netlify?.env?.get?.('CONTEXT') ||
+    null;
+  return context === 'production';
 }
 
 function trackerStore() {
