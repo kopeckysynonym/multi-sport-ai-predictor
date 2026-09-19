@@ -35,3 +35,9 @@
   from = "/api/upcoming"
   to = "/.netlify/functions/upcoming"
   status = 200
+
+
+[[redirects]]
+  from = "/api/tracker"
+  to = "/.netlify/functions/tracker"
+  status = 200
