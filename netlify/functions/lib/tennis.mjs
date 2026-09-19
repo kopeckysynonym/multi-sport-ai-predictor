@@ -265,17 +265,28 @@ export function calculateTennisModelFromMatches(matches, playerA, playerB, surfa
     70 * (aSurfaceForm - bSurfaceForm);
 
   const probabilityA = 1 / (1 + 10 ** (-ratingDiff / 400));
-  const latestTimes = [
+  const playerRows = [...aRows, ...bRows];
+  const playerTimes = playerRows
+    .map(row => Date.parse(row?.date || 0))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  const latestByPlayer = [
     Date.parse(aRows[0]?.date || 0) || 0,
     Date.parse(bRows[0]?.date || 0) || 0
   ].filter(Boolean);
-  const latestTime = latestTimes.length ? Math.min(...latestTimes) : 0;
+  const stalerLatestTime = latestByPlayer.length ? Math.min(...latestByPlayer) : 0;
+  const newestAvailableTime = playerTimes.length ? playerTimes[playerTimes.length - 1] : 0;
 
   return {
     surface: selectedSurface,
     probability_a: probabilityA,
     probability_b: 1 - probabilityA,
-    latest_match_date: latestTime ? new Date(latestTime).toISOString() : null,
+    latest_match_date: stalerLatestTime ? new Date(stalerLatestTime).toISOString() : null,
+    newest_available_match_date: newestAvailableTime ? new Date(newestAvailableTime).toISOString() : null,
+    actual_match_range: playerTimes.length ? {
+      from: new Date(playerTimes[0]).toISOString(),
+      to: new Date(playerTimes[playerTimes.length - 1]).toISOString()
+    } : null,
     player_a: {
       name: playerA,
       matches_12m: aRows.length,
@@ -358,6 +369,11 @@ export async function loadTennisPlayerModelData(playerA, playerB, selectedFixtur
     model.latest_match_date,
     targetDate
   );
+  const targetTime = Date.parse(targetDate || '');
+  const newestAvailableTime = Date.parse(model.newest_available_match_date || '');
+  const newestDataAgeDays = Number.isFinite(targetTime) && Number.isFinite(newestAvailableTime)
+    ? Math.max(0, Math.round((targetTime - newestAvailableTime) / 86400000))
+    : null;
 
   return {
     ...model,
@@ -365,6 +381,7 @@ export async function loadTennisPlayerModelData(playerA, playerB, selectedFixtur
     tour,
     rolling_from: rolling.from,
     rolling_to: rolling.to,
+    newest_data_age_days: newestDataAgeDays,
     source_urls: rolling.source_urls
   };
 }
