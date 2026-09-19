@@ -165,43 +165,117 @@ export async function listPredictionColumns() {
   return Array.isArray(payload?.value) ? payload.value : [];
 }
 
-async function createColumnBatch(token, siteId, listId, definitions) {
-  const requests = definitions.map((definition, index) => ({
-    id: String(index + 1),
-    method: 'POST',
-    url: `/sites/${siteId}/lists/${listId}/columns`,
-    headers: { 'Content-Type': 'application/json' },
-    body: definition,
-  }));
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-  const payload = await graphJson(
-    'https://graph.microsoft.com/v1.0/$batch',
-    {
-      method: 'POST',
-      body: JSON.stringify({ requests }),
+function creationDefinition(definition) {
+  const {
+    required: _required,
+    indexed: _indexed,
+    enforceUniqueValues: _unique,
+    ...base
+  } = definition;
+  return {
+    ...base,
+    hidden: false,
+    indexed: false,
+    enforceUniqueValues: false,
+  };
+}
+
+function desiredColumnSettings(definition) {
+  const settings = {};
+  if (definition.required === true) settings.required = true;
+  if (definition.indexed === true) settings.indexed = true;
+  if (definition.enforceUniqueValues === true) settings.enforceUniqueValues = true;
+  return settings;
+}
+
+async function graphWrite(url, { method = 'POST', body }, token) {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
     },
-    token
-  );
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  const payload = await response.json().catch(() => null);
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload,
+    retryAfter: Number(response.headers.get('retry-after')) || 0,
+  };
+}
 
-  const responses = Array.isArray(payload?.responses) ? payload.responses : [];
-  const failures = [];
-  const created = [];
+async function createColumnSequential(token, siteId, listId, definition) {
+  const baseUrl = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/columns`;
+  const body = creationDefinition(definition);
 
-  for (let index = 0; index < responses.length; index += 1) {
-    const response = responses[index];
-    const definition = definitions[index];
-    if (Number(response?.status) >= 200 && Number(response?.status) < 300) {
-      created.push(definition.name);
-    } else {
-      failures.push({
-        name: definition.name,
-        status: response?.status || null,
-        error: response?.body?.error?.message || response?.body?.error?.code || 'Unknown Graph batch error',
-      });
-    }
+  let last = null;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    last = await graphWrite(baseUrl, { method: 'POST', body }, token);
+    if (last.ok) break;
+
+    const retryable = [409, 429, 500, 502, 503, 504].includes(last.status);
+    if (!retryable || attempt === 5) break;
+
+    const waitMs = last.retryAfter > 0
+      ? Math.min(last.retryAfter * 1000, 4000)
+      : Math.min(250 * (2 ** (attempt - 1)), 2000);
+    await sleep(waitMs);
   }
 
-  return { created, failures };
+  if (!last?.ok) {
+    return {
+      created: false,
+      configured: false,
+      name: definition.name,
+      status: last?.status || null,
+      error: last?.payload?.error?.message || last?.payload?.error?.code || 'Unknown Graph error',
+    };
+  }
+
+  const columnId = last.payload?.id;
+  const settings = desiredColumnSettings(definition);
+  if (!columnId || Object.keys(settings).length === 0) {
+    return {
+      created: true,
+      configured: Object.keys(settings).length === 0,
+      name: definition.name,
+      status: last.status,
+      settings_status: Object.keys(settings).length === 0 ? 'not_needed' : 'missing_column_id',
+    };
+  }
+
+  let patched = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    patched = await graphWrite(
+      `${baseUrl}/${encodeURIComponent(columnId)}`,
+      { method: 'PATCH', body: settings },
+      token
+    );
+    if (patched.ok) break;
+
+    const retryable = [409, 429, 500, 502, 503, 504].includes(patched.status);
+    if (!retryable || attempt === 4) break;
+    await sleep(Math.min(300 * (2 ** (attempt - 1)), 2000));
+  }
+
+  return {
+    created: true,
+    configured: Boolean(patched?.ok),
+    name: definition.name,
+    status: last.status,
+    settings_status: patched?.status || null,
+    settings_error: patched?.ok
+      ? null
+      : patched?.payload?.error?.message || patched?.payload?.error?.code || 'Column created, settings update failed',
+  };
 }
 
 export async function provisionAiPredictionsSchema() {
@@ -215,16 +289,35 @@ export async function provisionAiPredictionsSchema() {
 
   const created = [];
   const failures = [];
+  const configurationWarnings = [];
 
-  for (let offset = 0; offset < missing.length; offset += 20) {
-    const batch = missing.slice(offset, offset + 20);
-    const result = await createColumnBatch(token, siteId, listId, batch);
-    created.push(...result.created);
-    failures.push(...result.failures);
+  for (const definition of missing) {
+    const result = await createColumnSequential(token, siteId, listId, definition);
+    if (result.created) {
+      created.push(definition.name);
+      if (!result.configured && result.settings_status !== 'not_needed') {
+        configurationWarnings.push({
+          name: definition.name,
+          status: result.settings_status,
+          error: result.settings_error,
+        });
+      }
+      await sleep(120);
+    } else {
+      failures.push({
+        name: definition.name,
+        status: result.status,
+        error: result.error,
+      });
+      await sleep(250);
+    }
   }
 
+  await sleep(500);
   const after = await listPredictionColumns();
   const afterNames = new Set(after.map(column => column?.name).filter(Boolean));
+  for (const name of created) afterNames.add(name);
+
   const stillMissing = AI_PREDICTIONS_COLUMNS
     .map(column => column.name)
     .filter(name => !afterNames.has(name));
@@ -235,6 +328,7 @@ export async function provisionAiPredictionsSchema() {
     created: created.length,
     created_columns: created,
     failures,
+    configuration_warnings: configurationWarnings,
     still_missing: stillMissing,
     ready: stillMissing.length === 0,
   };
