@@ -497,8 +497,7 @@ function cacheSet(key,value,ttlMs=5*60*1000){
 
 function eventTime(value){
   const time=Date.parse(value||0);
-  return Number.isFinite(time)?time:0;
-}
+  return Number.isFinite(time)?time:0;}
 
 function normalizeUpcomingEvent(item,provider,sportKey=null){
   const fixtureId=item?.fixture?.id??null;
@@ -526,6 +525,11 @@ function utcDateOffset(days){
   const date=new Date();
   date.setUTCDate(date.getUTCDate()+days);
   return date.toISOString().slice(0,10);
+}
+
+function czFootballSeasonStart(date=new Date()){
+  const year=date.getUTCFullYear();
+  return date.getUTCMonth()+1>=7?year:year-1;
 }
 
 async function listCzFootballViaHeadToHead(leagueId){
@@ -560,32 +564,56 @@ async function listCzFootballUpcoming(){
   const cached=cacheGet(cacheKey);
   if(cached)return cached;
 
-  const leagueId=Number(globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_LEAGUE_ID')||process.env.API_FOOTBALL_CZ_LEAGUE_ID||345);
-  const firstWindow=Array.from({length:7},(_,i)=>utcDateOffset(i));
-  const secondWindow=Array.from({length:7},(_,i)=>utcDateOffset(i+7));
-
-  const fetchWindow=async dates=>{
-    const payloads=await Promise.all(dates.map(date=>apiFootball('fixtures',{league:leagueId,date})));
-    return payloads.flatMap(payload=>payload?.response||[]);
-  };
+  const leagueId=Number(
+    globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_LEAGUE_ID')||
+    process.env.API_FOOTBALL_CZ_LEAGUE_ID||
+    345
+  );
+  const seasonOverride=globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_SEASON')||process.env.API_FOOTBALL_CZ_SEASON;
+  const season=/^\d{4}$/.test(String(seasonOverride||''))
+    ? Number(seasonOverride)
+    : czFootballSeasonStart();
+  const from=utcDateOffset(0);
+  const to=utcDateOffset(35);
 
   let rows=[];
-  try{
-    rows=await fetchWindow(firstWindow);
-    if(!rows.length)rows=await fetchWindow(secondWindow);
-  }catch(error){
-    console.warn('Czech league date-window lookup failed, using head-to-head fallback:',error.message);
-    rows=await listCzFootballViaHeadToHead(leagueId);
+  let lastError=null;
+  const attempts=[
+    {label:'league-season-window',params:{league:leagueId,season,from,to}},
+    {label:'league-window',params:{league:leagueId,from,to}},
+    {label:'league-next',params:{league:leagueId,next:30}}
+  ];
+
+  for(const attempt of attempts){
+    try{
+      const payload=await apiFootball('fixtures',attempt.params);
+      rows=payload?.response||[];
+      if(rows.length)break;
+    }catch(error){
+      lastError=error;
+      console.warn(`Czech league ${attempt.label} lookup failed:`,error.message);
+    }
+  }
+
+  if(!rows.length){
+    try{
+      rows=await listCzFootballViaHeadToHead(leagueId);
+    }catch(error){
+      if(lastError)throw lastError;
+      throw error;
+    }
   }
 
   const now=Date.now();
   const events=rows
+    .filter(row=>!['CANC','PST','ABD','AWD','WO'].includes(String(row?.fixture?.status?.short||'').toUpperCase()))
     .map(row=>normalizeUpcomingEvent(row,'api-football'))
     .filter(Boolean)
     .filter(event=>eventTime(event.commence_time)>=now)
     .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
 
-  return cacheSet(cacheKey,events.slice(0,30),10*60*1000);
+  const unique=[...new Map(events.map(event=>[String(event.fixture_id||event.id),event])).values()];
+  return cacheSet(cacheKey,unique.slice(0,30),10*60*1000);
 }
 
 
@@ -997,8 +1025,7 @@ export async function loadNbaTeamStats(teamName,targetDate){
     boxscores_used:gameMetrics.length,
     range:{
       from:Number.isFinite(firstTime)?new Date(firstTime).toISOString():null,
-      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null
-    },
+      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null    },
     wins,
     losses:games.length-wins,
     win_pct:roundMetric(100*wins/games.length,1),
@@ -1447,8 +1474,7 @@ async function listOddsUpcoming(sport){
   if(cached)return cached;
 
   const sports=sport==='fifa'
-    ? await fetchOddsSports(true)
-    : sport==='tennis'
+    ? await fetchOddsSports(true)    : sport==='tennis'
       ? await fetchOddsSports(false)
       : [];
   const keys=oddsSportKeysForCategory(sport,sports);
