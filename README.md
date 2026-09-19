@@ -183,3 +183,15 @@ Current match-winner odds come from The Odds API. Tennis tournament coverage inc
 Historical result data are loaded from Jeff Sackmann-compatible public CSV sources, with an archival mirror fallback. These datasets are CC BY-NC-SA; attribution and non-commercial-use requirements apply.
 
 Tennis predictions are saved to Prediction Tracker with the selected market, price, model probability, Value Bet, predicted winner, surface, reliability state, and prediction timestamp.
+
+
+## Edge vs Expected ROI
+
+Betting output is split into two different metrics:
+
+- **Edge (percentage points)** = model probability minus the bookmaker market probability after normalizing the market overround.
+- **Expected ROI (%)** = `model_probability * decimal_odds - 1`, expressed as a percentage.
+
+The selected market is chosen by the highest Expected ROI. Recommendation logic uses Expected ROI rather than Edge. When reliability is limited, both metrics remain informational only and no `SÁZET` recommendation is emitted.
+
+Prediction Tracker schema v2 stores `edge_pct` and `expected_roi_pct` separately.
