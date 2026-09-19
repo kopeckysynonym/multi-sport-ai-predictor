@@ -610,7 +610,7 @@ async function listCzFootballUpcoming(){
     345
   );
   const seasonOverride=globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_SEASON')||process.env.API_FOOTBALL_CZ_SEASON;
-  const season=/^\\d{4}$/.test(String(seasonOverride||''))
+  const season=/^\d{4}$/.test(String(seasonOverride||''))
     ? Number(seasonOverride)
     : czFootballSeasonStart();
   const from=utcDateOffset(0);
