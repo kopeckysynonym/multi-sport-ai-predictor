@@ -1,6 +1,6 @@
 import { TEAM_MAPPING } from './data.mjs';
 import { fetchJson, ProviderError } from './http.mjs';
-const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map();
+const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map();let apiFootballSeasonRangeCache=null;
 export function liveDataEnabled(){return !['0','false','no','off'].includes(String(process.env.LIVE_DATA_ENABLED||'true').toLowerCase());}
 export function normName(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
 export function getOddsTeamName(sport,team){return TEAM_MAPPING?.[sport]?.[team]?.odds_name||team;}
@@ -36,6 +36,43 @@ async function fetchTeamSeasonFixtures(id,season){
   return apiFootball('fixtures',{team:id,season,status:'FT-AET-PEN'});
 }
 
+function parseAllowedSeasonRange(error){
+  const match=String(error?.message||'').match(/try\s+from\s+(\d{4})\s+to\s+(\d{4})/i);
+  if(!match)return null;
+  return {min:Number(match[1]),max:Number(match[2])};
+}
+
+async function resolveAccessibleSeasonCandidates(id,currentSeason,wanted){
+  let range=apiFootballSeasonRangeCache;
+  if(range){
+    return {
+      seasons:[range.max,range.max-1].filter(s=>s>=range.min),
+      historical:range.max<currentSeason,
+      allowed_range:range
+    };
+  }
+
+  try{
+    const p=await fetchTeamSeasonFixtures(id,currentSeason);
+    const completed=(p?.response||[]).filter(item=>item?.goals?.home!=null&&item?.goals?.away!=null).length;
+    return {
+      seasons:completed>=wanted?[currentSeason]:[currentSeason,currentSeason-1],
+      historical:false,
+      allowed_range:null,
+      first_payload:p
+    };
+  }catch(error){
+    range=parseAllowedSeasonRange(error);
+    if(!range)throw error;
+    apiFootballSeasonRangeCache=range;
+    return {
+      seasons:[range.max,range.max-1].filter(s=>s>=range.min),
+      historical:true,
+      allowed_range:range
+    };
+  }
+}
+
 export async function loadLiveFootballTeamData(sport,team,fallback){
   const ck=`${sport}:${team}`;
   if(liveFootballCache.has(ck))return liveFootballCache.get(ck);
@@ -44,10 +81,15 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   const recentRaw=globalThis.Netlify?.env?.get?.('API_FOOTBALL_RECENT_MATCHES');
   const wanted=Math.max(3,Number(recentRaw||10));
   const currentSeason=inferFootballSeason(sport,team);
-  const seasonCandidates=[currentSeason,currentSeason-1];
+  const access=await resolveAccessibleSeasonCandidates(id,currentSeason,wanted);
   const rows=[];
 
-  for(const season of seasonCandidates){
+  if(access.first_payload){
+    rows.push(...(access.first_payload?.response||[]));
+  }
+
+  for(const season of access.seasons){
+    if(access.first_payload&&season===currentSeason)continue;
     const p=await fetchTeamSeasonFixtures(id,season);
     rows.push(...(p?.response||[]));
     const completed=rows.filter(item=>item?.goals?.home!=null&&item?.goals?.away!=null).length;
@@ -70,7 +112,7 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   }
 
   if(scored.length<3)throw new ProviderError(
-    `Málo dokončených zápasů pro '${team}' v sezonách ${seasonCandidates.join(' a ')}.`,
+    `Málo dokončených zápasů pro '${team}' v dostupných sezonách ${access.seasons.join(' a ')}.`,
     {status:422,code:'NOT_ENOUGH_MATCHES'}
   );
 
@@ -80,7 +122,9 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
     defense:avg(conceded),
     home_adv:fallback.home_adv||.12,
     matches_used:scored.length,
-    seasons_used:seasonCandidates
+    seasons_used:access.seasons,
+    source_mode:access.historical?'api-football-historical':'api-football-live',
+    allowed_season_range:access.allowed_range
   };
   liveFootballCache.set(ck,r);
   return r;
