@@ -170,9 +170,27 @@ function renderFixtureMeta(){
   const event=selectedEvent();
   if(!event){
     fixtureMeta.textContent='';
+    go.disabled=true;
     return;
   }
+
   const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
+
+  if(sport.value==='nba'&&event.analysis_available===false){
+    const h=event.current_season_games?.home;
+    const a=event.current_season_games?.away;
+    const counts=Number.isFinite(Number(h))&&Number.isFinite(Number(a))
+      ? `domácí ${h} / hosté ${a} dokončených zápasů`
+      : 'počet zápasů se nepodařilo ověřit';
+    parts.push(`NEDOSTATEK DAT · ${counts}`);
+    go.disabled=true;
+  }else{
+    if(sport.value==='nba'&&event.data_status){
+      parts.push(event.data_status);
+    }
+    go.disabled=false;
+  }
+
   fixtureMeta.textContent=parts.join(' · ');
 }
 
@@ -203,10 +221,14 @@ async function loadUpcoming(){
     fixture.innerHTML=events.map((event,index)=>{
       const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
       const league=event.league?' · '+event.league:'';
-      return `<option value="${index}">${when} — ${event.home_team} vs ${event.away_team}${league}</option>`;
+      const availability=sport.value==='nba'&&event.analysis_available===false
+        ? ' · NEDOSTATEK DAT'
+        : sport.value==='nba'&&event.data_status
+          ? ' · '+event.data_status
+          : '';
+      return `<option value="${index}">${when} — ${event.home_team} vs ${event.away_team}${league}${availability}</option>`;
     }).join('');
     fixture.disabled=false;
-    go.disabled=false;
     renderFixtureMeta();
   }catch(e){
     fixture.innerHTML='<option>Načtení selhalo</option>';
@@ -347,6 +369,10 @@ function renderResult(d,event){
 async function predict(){
   const event=selectedEvent();
   if(!event)return;
+  if(sport.value==='nba'&&event.analysis_available===false){
+    renderFixtureMeta();
+    return;
+  }
 
   err.classList.add('d-none');
   res.classList.add('d-none');
@@ -372,8 +398,9 @@ async function predict(){
     err.textContent=e.message;
     err.classList.remove('d-none');
   }finally{
-    go.disabled=false;
     go.textContent='Analyzovat zápas';
+    const current=selectedEvent();
+    go.disabled=Boolean(sport.value==='nba'&&current?.analysis_available===false);
   }
 }
 
