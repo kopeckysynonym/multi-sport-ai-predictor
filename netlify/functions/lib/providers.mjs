@@ -361,6 +361,322 @@ async function listCzFootballUpcoming(){
   return cacheSet(cacheKey,events.slice(0,30),10*60*1000);
 }
 
+
+const ESPN_NBA_BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+const nbaTeamDirectoryCache={value:null,expires:0};
+const nbaTeamStatsCache=new Map();
+const nbaSummaryCache=new Map();
+
+function numberFromScore(score){
+  if(score==null)return null;
+  if(typeof score==='number')return Number.isFinite(score)?score:null;
+  if(typeof score==='string'){
+    const n=Number(score);
+    return Number.isFinite(n)?n:null;
+  }
+  const n=Number(score?.value??score?.displayValue);
+  return Number.isFinite(n)?n:null;
+}
+
+function statEntry(stats,aliases){
+  const wanted=new Set(aliases.map(normName));
+  return (stats||[]).find(item=>{
+    const candidates=[item?.name,item?.label,item?.abbreviation,item?.shortDisplayName].map(normName);
+    return candidates.some(v=>wanted.has(v));
+  })||null;
+}
+
+function numericStat(stats,aliases){
+  const item=statEntry(stats,aliases);
+  if(!item)return null;
+  const candidates=[item?.value,item?.displayValue,item?.rawValue];
+  for(const candidate of candidates){
+    const n=Number(String(candidate??'').replace('%',''));
+    if(Number.isFinite(n))return n;
+  }
+  return null;
+}
+
+function attemptedStat(stats,aliases){
+  const item=statEntry(stats,aliases);
+  if(!item)return null;
+  const text=String(item?.displayValue??item?.value??'');
+  const pair=text.match(/(\d+(?:\.\d+)?)\s*[-/]\s*(\d+(?:\.\d+)?)/);
+  if(pair){
+    const n=Number(pair[2]);
+    return Number.isFinite(n)?n:null;
+  }
+  return null;
+}
+
+function estimatedPossessions(stats){
+  const fga=attemptedStat(stats,[
+    'fieldGoalsMade-fieldGoalsAttempted','fieldGoalsMadeFieldGoalsAttempted','FG'
+  ]);
+  const fta=attemptedStat(stats,[
+    'freeThrowsMade-freeThrowsAttempted','freeThrowsMadeFreeThrowsAttempted','FT'
+  ]);
+  const oreb=numericStat(stats,['offensiveRebounds','OREB','offRebounds']);
+  const tov=numericStat(stats,['turnovers','TO','TOV']);
+  if([fga,fta,oreb,tov].some(v=>!Number.isFinite(v)))return null;
+  return fga+0.44*fta-oreb+tov;
+}
+
+function average(values){
+  const clean=values.filter(Number.isFinite);
+  return clean.length?clean.reduce((sum,v)=>sum+v,0)/clean.length:null;
+}
+
+function roundMetric(value,digits=1){
+  return Number.isFinite(value)?Number(value.toFixed(digits)):null;
+}
+
+function espnSeasonYear(dateValue){
+  const date=new Date(dateValue||Date.now());
+  const year=date.getUTCFullYear();
+  return date.getUTCMonth()+1>=7?year+1:year;
+}
+
+async function espnJson(path,params={}){
+  const url=new URL(`${ESPN_NBA_BASE}/${String(path).replace(/^\//,'')}`);
+  for(const[k,v]of Object.entries(params)){
+    if(v!==null&&v!==undefined&&v!=='')url.searchParams.set(k,String(v));
+  }
+  return (await fetchJson(url,{headers:{accept:'application/json'}},'ESPN NBA')).data;
+}
+
+async function espnNbaTeamDirectory(){
+  if(nbaTeamDirectoryCache.value&&nbaTeamDirectoryCache.expires>Date.now()){
+    return nbaTeamDirectoryCache.value;
+  }
+  const payload=await espnJson('teams');
+  const rows=payload?.sports?.[0]?.leagues?.[0]?.teams||[];
+  const teams=rows.map(row=>row?.team).filter(Boolean);
+  nbaTeamDirectoryCache.value=teams;
+  nbaTeamDirectoryCache.expires=Date.now()+24*60*60*1000;
+  return teams;
+}
+
+const ESPN_NBA_ALIASES={
+  'losangelesclippers':'laclippers'
+};
+
+export async function resolveEspnNbaTeam(teamName){
+  const teams=await espnNbaTeamDirectory();
+  const wanted=ESPN_NBA_ALIASES[normName(teamName)]||normName(teamName);
+  const exact=teams.find(team=>{
+    const candidates=[
+      team?.displayName,
+      team?.shortDisplayName,
+      team?.name,
+      [team?.location,team?.name].filter(Boolean).join(' ')
+    ].map(normName);
+    return candidates.includes(wanted);
+  });
+  if(exact)return exact;
+
+  const fuzzy=teams.find(team=>{
+    const display=normName(team?.displayName);
+    return display.includes(wanted)||wanted.includes(display);
+  });
+  if(fuzzy)return fuzzy;
+
+  throw new ProviderError(
+    `ESPN NBA nenašlo tým '${teamName}'.`,
+    {status:404,code:'NBA_TEAM_NOT_FOUND'}
+  );
+}
+
+async function fetchEspnTeamSchedule(teamId,season,seasontype){
+  const payload=await espnJson(`teams/${teamId}/schedule`,{season,seasontype});
+  return payload?.events||[];
+}
+
+async function fetchEspnNbaSummary(eventId){
+  const cached=nbaSummaryCache.get(String(eventId));
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const promise=espnJson('summary',{event:eventId});
+  nbaSummaryCache.set(String(eventId),{value:promise,expires:Date.now()+6*60*60*1000});
+  try{
+    const value=await promise;
+    nbaSummaryCache.set(String(eventId),{value,expires:Date.now()+6*60*60*1000});
+    return value;
+  }catch(error){
+    nbaSummaryCache.delete(String(eventId));
+    throw error;
+  }
+}
+
+function completedTeamGame(event,teamId,targetTime){
+  const competition=event?.competitions?.[0];
+  if(!competition)return null;
+  const eventTime=Date.parse(event?.date||competition?.date||0);
+  if(!Number.isFinite(eventTime)||eventTime>=targetTime)return null;
+  const completed=Boolean(event?.status?.type?.completed||competition?.status?.type?.completed);
+  const state=String(event?.status?.type?.state||competition?.status?.type?.state||'');
+  if(!completed&&state!=='post')return null;
+
+  const competitors=competition?.competitors||[];
+  const team=competitors.find(row=>String(row?.team?.id)===String(teamId));
+  const opponent=competitors.find(row=>String(row?.team?.id)!==String(teamId));
+  if(!team||!opponent)return null;
+
+  const pointsFor=numberFromScore(team?.score);
+  const pointsAgainst=numberFromScore(opponent?.score);
+  if(!Number.isFinite(pointsFor)||!Number.isFinite(pointsAgainst))return null;
+
+  return {
+    id:String(event?.id||competition?.id||''),
+    date:event?.date||competition?.date||null,
+    home_away:String(team?.homeAway||'').toLowerCase(),
+    points_for:pointsFor,
+    points_against:pointsAgainst,
+    won:pointsFor>pointsAgainst,
+    opponent:opponent?.team?.displayName||opponent?.team?.name||null
+  };
+}
+
+async function lastNbaGames(teamId,targetDate,wanted=10){
+  const targetTime=Date.parse(targetDate||new Date().toISOString());
+  const season=espnSeasonYear(targetDate);
+  const queries=[
+    [season,2],[season,3],
+    [season-1,3],[season-1,2]
+  ];
+
+  const settled=await Promise.allSettled(
+    queries.map(([seasonYear,seasontype])=>fetchEspnTeamSchedule(teamId,seasonYear,seasontype))
+  );
+  const games=[];
+  for(const result of settled){
+    if(result.status!=='fulfilled')continue;
+    for(const event of result.value||[]){
+      const game=completedTeamGame(event,teamId,targetTime);
+      if(game)games.push(game);
+    }
+  }
+
+  const unique=[...new Map(games.map(game=>[game.id,game])).values()]
+    .sort((a,b)=>Date.parse(b.date||0)-Date.parse(a.date||0))
+    .slice(0,wanted);
+
+  if(unique.length<wanted){
+    throw new ProviderError(
+      `ESPN NBA poskytlo jen ${unique.length} dokončených zápasů před vybraným utkáním; model vyžaduje ${wanted}.`,
+      {status:422,code:'NBA_NOT_ENOUGH_GAMES'}
+    );
+  }
+  return unique;
+}
+
+function boxTeam(summary,teamId){
+  return (summary?.boxscore?.teams||[]).find(
+    row=>String(row?.team?.id)===String(teamId)
+  )||null;
+}
+
+function formMetrics(games,location){
+  const rows=games.filter(game=>game.home_away===location);
+  if(!rows.length)return {
+    games:0,wins:0,losses:0,win_pct:null,ppg:null,papg:null
+  };
+  const wins=rows.filter(game=>game.won).length;
+  return {
+    games:rows.length,
+    wins,
+    losses:rows.length-wins,
+    win_pct:roundMetric(100*wins/rows.length,1),
+    ppg:roundMetric(average(rows.map(game=>game.points_for)),1),
+    papg:roundMetric(average(rows.map(game=>game.points_against)),1)
+  };
+}
+
+export async function loadNbaTeamStats(teamName,targetDate){
+  const cacheKey=`${normName(teamName)}:${String(targetDate||'now').slice(0,10)}`;
+  const cached=nbaTeamStatsCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const team=await resolveEspnNbaTeam(teamName);
+  const games=await lastNbaGames(team.id,targetDate,10);
+  const summaryResults=await Promise.allSettled(
+    games.map(game=>fetchEspnNbaSummary(game.id))
+  );
+
+  const gameMetrics=[];
+  for(let i=0;i<games.length;i+=1){
+    const summaryResult=summaryResults[i];
+    if(summaryResult.status!=='fulfilled')continue;
+    const summary=summaryResult.value;
+    const own=boxTeam(summary,team.id);
+    const opponent=(summary?.boxscore?.teams||[]).find(
+      row=>String(row?.team?.id)!==String(team.id)
+    );
+    if(!own||!opponent)continue;
+
+    const ownPoss=estimatedPossessions(own.statistics);
+    const oppPoss=estimatedPossessions(opponent.statistics);
+    if(!Number.isFinite(ownPoss)||!Number.isFinite(oppPoss)||ownPoss<=0||oppPoss<=0)continue;
+
+    const pace=(ownPoss+oppPoss)/2;
+    gameMetrics.push({
+      game_id:games[i].id,
+      own_possessions:ownPoss,
+      opp_possessions:oppPoss,
+      pace,
+      offensive_rating:100*games[i].points_for/ownPoss,
+      defensive_rating:100*games[i].points_against/oppPoss
+    });
+  }
+
+  if(gameMetrics.length<6){
+    throw new ProviderError(
+      `ESPN NBA poskytlo boxscore data pro pace/rating jen u ${gameMetrics.length} z 10 zápasů týmu ${teamName}.`,
+      {status:422,code:'NBA_NOT_ENOUGH_BOXSCORES'}
+    );
+  }
+
+  const firstTime=Math.min(...games.map(game=>Date.parse(game.date)).filter(Number.isFinite));
+  const lastTime=Math.max(...games.map(game=>Date.parse(game.date)).filter(Number.isFinite));
+  const wins=games.filter(game=>game.won).length;
+  const result={
+    source:'ESPN NBA',
+    source_mode:'espn-nba-last10',
+    team_id:String(team.id),
+    team_name:team.displayName||teamName,
+    matches_used:games.length,
+    boxscores_used:gameMetrics.length,
+    range:{
+      from:Number.isFinite(firstTime)?new Date(firstTime).toISOString():null,
+      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null
+    },
+    wins,
+    losses:games.length-wins,
+    win_pct:roundMetric(100*wins/games.length,1),
+    points_for:roundMetric(average(games.map(game=>game.points_for)),1),
+    points_against:roundMetric(average(games.map(game=>game.points_against)),1),
+    pace:roundMetric(average(gameMetrics.map(row=>row.pace)),1),
+    offensive_rating:roundMetric(average(gameMetrics.map(row=>row.offensive_rating)),1),
+    defensive_rating:roundMetric(average(gameMetrics.map(row=>row.defensive_rating)),1),
+    home_form:formMetrics(games,'home'),
+    away_form:formMetrics(games,'away'),
+    last_game_date:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null
+  };
+
+  if([
+    result.points_for,result.points_against,result.pace,
+    result.offensive_rating,result.defensive_rating
+  ].some(value=>!Number.isFinite(value))){
+    throw new ProviderError(
+      `NBA statistiky týmu ${teamName} nejsou kompletní.`,
+      {status:422,code:'NBA_STATS_INCOMPLETE'}
+    );
+  }
+
+  nbaTeamStatsCache.set(cacheKey,{value:result,expires:Date.now()+30*60*1000});
+  return result;
+}
+
 export async function fetchOddsSports(all=true){
   const api=process.env.ODDS_API_KEY;
   if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});
