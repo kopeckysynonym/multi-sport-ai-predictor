@@ -18,7 +18,7 @@
 <body>
 <main class="container py-5">
   <h1>Multi-Sport AI Predictor</h1>
-  <p class="muted">Skutečné nadcházející zápasy · Fotbal ČR · FIFA/UEFA · NBA · NHL</p>
+  <p class="muted">Skutečné nadcházející zápasy · Fotbal ČR · FIFA/UEFA · NBA · NHL · Tenis ATP/WTA</p>
 
   <div class="card p-4">
     <div class="row g-3 align-items-end">
@@ -64,7 +64,7 @@
     <p id="historyRangeRow" class="d-none">Rozsah použitých historických zápasů: <strong id="historyRange"></strong></p>
     <p id="dataAgeRow" class="d-none">Stáří dat: <strong id="dataAge"></strong></p>
     <p id="reliabilityRow" class="d-none">Spolehlivost predikce: <span id="reliability" class="badge"></span></p>
-    <p>Odhad skóre: <strong id="score"></strong></p>
+    <p><span id="scoreLabel">Odhad skóre</span>: <strong id="score"></strong></p>
     <p>Value Bet: <strong id="value"></strong> · <span id="rec" class="badge"></span></p>
 
     <h5>Pravděpodobnosti</h5>
@@ -164,7 +164,7 @@
             <th>Kurz</th>
             <th>Model %</th>
             <th>Value Bet</th>
-            <th>Skóre</th>
+            <th>Predikce</th>
             <th>Spolehlivost</th>
           </tr>
         </thead>
@@ -409,11 +409,14 @@ function renderResult(d,event){
   }
 
   const scoreEl=document.querySelector('#score');
+  const scoreLabel=document.querySelector('#scoreLabel');
   if(d.sport==='tennis'){
+    scoreLabel.textContent='Predikovaný vítěz';
     scoreEl.textContent=d.predicted_winner
       ? d.predicted_winner+' ('+d.predicted_winner_probability+' %)'
       : '–';
   }else{
+    scoreLabel.textContent='Odhad skóre';
     scoreEl.textContent=d.expected_score?.home+' : '+d.expected_score?.away;
   }
 
