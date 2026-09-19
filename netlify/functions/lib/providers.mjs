@@ -799,6 +799,375 @@ export async function loadNbaTeamStats(teamName,targetDate){
   return result;
 }
 
+
+const NHL_WEB_BASE='https://api-web.nhle.com/v1';
+const NHL_STATS_BASE='https://api.nhle.com/stats/rest/en';
+const nhlTeamDirectoryCache={value:null,expires:0};
+const nhlScheduleCache=new Map();
+const nhlBoxscoreCache=new Map();
+const nhlTeamStatsCache=new Map();
+
+async function nhlWebJson(path,params={}){
+  const url=new URL(`${NHL_WEB_BASE}/${String(path).replace(/^\//,'')}`);
+  for(const[k,v]of Object.entries(params)){
+    if(v!==null&&v!==undefined&&v!=='')url.searchParams.set(k,String(v));
+  }
+  return (await fetchJson(url,{headers:{accept:'application/json'}},'NHL API')).data;
+}
+
+async function nhlStatsJson(path,params={}){
+  const url=new URL(`${NHL_STATS_BASE}/${String(path).replace(/^\//,'')}`);
+  for(const[k,v]of Object.entries(params)){
+    if(v!==null&&v!==undefined&&v!=='')url.searchParams.set(k,String(v));
+  }
+  return (await fetchJson(url,{headers:{accept:'application/json'}},'NHL Stats API')).data;
+}
+
+export function nhlSeasonId(dateValue){
+  const date=new Date(dateValue||Date.now());
+  const year=date.getUTCFullYear();
+  const start=date.getUTCMonth()+1>=7?year:year-1;
+  return Number(`${start}${start+1}`);
+}
+
+export function nhlSeasonLabel(seasonId){
+  const text=String(seasonId||'');
+  if(!/^\d{8}$/.test(text))return null;
+  return `${text.slice(0,4)}/${text.slice(6,8)}`;
+}
+
+async function nhlTeamDirectory(){
+  if(nhlTeamDirectoryCache.value&&nhlTeamDirectoryCache.expires>Date.now()){
+    return nhlTeamDirectoryCache.value;
+  }
+  const payload=await nhlStatsJson('team',{limit:-1});
+  const teams=payload?.data||[];
+  nhlTeamDirectoryCache.value=teams;
+  nhlTeamDirectoryCache.expires=Date.now()+24*60*60*1000;
+  return teams;
+}
+
+export async function resolveNhlTeam(teamName){
+  const teams=await nhlTeamDirectory();
+  const wanted=normName(teamName);
+  const exact=teams.find(team=>{
+    const candidates=[
+      team?.fullName,
+      team?.name,
+      team?.triCode,
+      team?.rawTricode,
+      team?.teamAbbrev
+    ].map(normName);
+    return candidates.includes(wanted);
+  });
+  if(exact)return exact;
+
+  const fuzzy=teams.find(team=>{
+    const full=normName(team?.fullName||team?.name);
+    return full&&(
+      full.includes(wanted)||
+      wanted.includes(full)
+    );
+  });
+  if(fuzzy)return fuzzy;
+
+  throw new ProviderError(
+    `NHL API nenašlo tým '${teamName}'.`,
+    {status:404,code:'NHL_TEAM_NOT_FOUND'}
+  );
+}
+
+function nhlTeamAbbrev(team){
+  return String(
+    team?.triCode||
+    team?.rawTricode||
+    team?.teamAbbrev||
+    ''
+  ).toUpperCase();
+}
+
+async function fetchNhlTeamSeasonSchedule(abbrev,seasonId){
+  const key=`${abbrev}:${seasonId}`;
+  const cached=nhlScheduleCache.get(key);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const promise=nhlWebJson(`club-schedule-season/${abbrev}/${seasonId}`)
+    .then(payload=>payload?.games||[]);
+  nhlScheduleCache.set(key,{value:promise,expires:Date.now()+30*60*1000});
+  try{
+    const value=await promise;
+    nhlScheduleCache.set(key,{value,expires:Date.now()+30*60*1000});
+    return value;
+  }catch(error){
+    nhlScheduleCache.delete(key);
+    throw error;
+  }
+}
+
+async function fetchNhlBoxscore(gameId){
+  const key=String(gameId);
+  const cached=nhlBoxscoreCache.get(key);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const promise=nhlWebJson(`gamecenter/${gameId}/boxscore`);
+  nhlBoxscoreCache.set(key,{value:promise,expires:Date.now()+6*60*60*1000});
+  try{
+    const value=await promise;
+    nhlBoxscoreCache.set(key,{value,expires:Date.now()+6*60*60*1000});
+    return value;
+  }catch(error){
+    nhlBoxscoreCache.delete(key);
+    throw error;
+  }
+}
+
+function completedNhlTeamGame(game,abbrev,targetTime){
+  const eventTime=Date.parse(game?.startTimeUTC||game?.gameDate||0);
+  if(!Number.isFinite(eventTime)||eventTime>=targetTime)return null;
+  if(![2,3].includes(Number(game?.gameType)))return null;
+  const state=String(game?.gameState||'').toUpperCase();
+  if(!['OFF','FINAL'].includes(state))return null;
+
+  const home=String(game?.homeTeam?.abbrev||'').toUpperCase();
+  const away=String(game?.awayTeam?.abbrev||'').toUpperCase();
+  const isHome=home===abbrev;
+  const isAway=away===abbrev;
+  if(!isHome&&!isAway)return null;
+
+  const own=isHome?game?.homeTeam:game?.awayTeam;
+  const opp=isHome?game?.awayTeam:game?.homeTeam;
+  const goalsFor=Number(own?.score);
+  const goalsAgainst=Number(opp?.score);
+  if(!Number.isFinite(goalsFor)||!Number.isFinite(goalsAgainst))return null;
+
+  return {
+    id:String(game?.id||''),
+    date:game?.startTimeUTC||game?.gameDate||null,
+    home_away:isHome?'home':'away',
+    goals_for:goalsFor,
+    goals_against:goalsAgainst,
+    won:goalsFor>goalsAgainst,
+    opponent:String(opp?.abbrev||'').toUpperCase()||null,
+    last_period_type:game?.gameOutcome?.lastPeriodType||null
+  };
+}
+
+async function currentSeasonNhlGames(teamName,targetDate,wanted=10){
+  const team=await resolveNhlTeam(teamName);
+  const abbrev=nhlTeamAbbrev(team);
+  if(!abbrev){
+    throw new ProviderError(
+      `NHL API nemá zkratku týmu '${teamName}'.`,
+      {status:502,code:'NHL_TEAM_ABBREV_MISSING'}
+    );
+  }
+
+  const seasonId=nhlSeasonId(targetDate);
+  const targetTime=Date.parse(targetDate||new Date().toISOString());
+  const schedule=await fetchNhlTeamSeasonSchedule(abbrev,seasonId);
+
+  const games=schedule
+    .map(game=>completedNhlTeamGame(game,abbrev,targetTime))
+    .filter(Boolean)
+    .sort((a,b)=>Date.parse(b.date||0)-Date.parse(a.date||0));
+
+  const unique=[...new Map(games.map(game=>[game.id,game])).values()].slice(0,wanted);
+  return {
+    team,
+    abbrev,
+    season_id:seasonId,
+    season_label:nhlSeasonLabel(seasonId),
+    games:unique,
+    completed_games_total:games.length
+  };
+}
+
+export function classifyNhlDataAvailability(homeGames,awayGames){
+  const home=Number(homeGames);
+  const away=Number(awayGames);
+  const valid=Number.isFinite(home)&&Number.isFinite(away);
+  const minimum=valid?Math.min(home,away):0;
+
+  if(!valid||minimum<3){
+    return {
+      analysis_available:false,
+      data_status:'NEDOSTATEK DAT',
+      reliability_status:'NEDOSTATEK DAT',
+      minimum_completed_games:valid?minimum:null
+    };
+  }
+  if(minimum<10){
+    return {
+      analysis_available:true,
+      data_status:'OMEZENÁ SPOLEHLIVOST',
+      reliability_status:'OMEZENÁ SPOLEHLIVOST',
+      minimum_completed_games:minimum
+    };
+  }
+  return {
+    analysis_available:true,
+    data_status:'PŘIPRAVENO',
+    reliability_status:'STANDARDNÍ SPOLEHLIVOST',
+    minimum_completed_games:minimum
+  };
+}
+
+async function enrichNhlUpcomingAvailability(events){
+  const enriched=await Promise.all(events.map(async event=>{
+    try{
+      const [home,away]=await Promise.all([
+        currentSeasonNhlGames(event.home_team,event.commence_time,10),
+        currentSeasonNhlGames(event.away_team,event.commence_time,10)
+      ]);
+      const status=classifyNhlDataAvailability(
+        home.completed_games_total,
+        away.completed_games_total
+      );
+      return {
+        ...event,
+        ...status,
+        nhl_season_label:home.season_label||away.season_label||null,
+        current_season_games:{
+          home:home.completed_games_total,
+          away:away.completed_games_total
+        }
+      };
+    }catch(error){
+      console.warn('NHL upcoming data availability check failed:',error.message);
+      return {
+        ...event,
+        analysis_available:false,
+        data_status:'NEDOSTATEK DAT',
+        reliability_status:'NEDOSTATEK DAT',
+        minimum_completed_games:null,
+        current_season_games:{home:null,away:null},
+        availability_error:error.message
+      };
+    }
+  }));
+  return enriched;
+}
+
+function goalieSavePctForSide(boxscore,side){
+  const goalies=boxscore?.playerByGameStats?.[side]?.goalies||[];
+  if(!goalies.length)return null;
+
+  const starter=goalies.find(goalie=>goalie?.starter===true)||
+    goalies.slice().sort((a,b)=>{
+      const parseToi=value=>{
+        const [m,s]=String(value||'0:0').split(':').map(Number);
+        return (Number.isFinite(m)?m:0)*60+(Number.isFinite(s)?s:0);
+      };
+      return parseToi(b?.toi)-parseToi(a?.toi);
+    })[0];
+
+  const pct=Number(starter?.savePctg);
+  if(Number.isFinite(pct))return pct<=1?pct*100:pct;
+
+  const shots=Number(starter?.shotsAgainst);
+  const saves=Number(starter?.saves);
+  return Number.isFinite(shots)&&shots>0&&Number.isFinite(saves)
+    ? 100*saves/shots
+    : null;
+}
+
+function nhlHomeAwayForm(games,location){
+  const rows=games.filter(game=>game.home_away===location);
+  if(!rows.length)return {
+    games:0,wins:0,losses:0,win_pct:null,gfpg:null,gapg:null
+  };
+  const wins=rows.filter(game=>game.won).length;
+  return {
+    games:rows.length,
+    wins,
+    losses:rows.length-wins,
+    win_pct:roundMetric(100*wins/rows.length,1),
+    gfpg:roundMetric(average(rows.map(game=>game.goals_for)),2),
+    gapg:roundMetric(average(rows.map(game=>game.goals_against)),2)
+  };
+}
+
+export async function loadNhlTeamStats(teamName,targetDate){
+  const cacheKey=`${normName(teamName)}:${String(targetDate||'now').slice(0,10)}`;
+  const cached=nhlTeamStatsCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const seasonData=await currentSeasonNhlGames(teamName,targetDate,10);
+  const {games,abbrev}=seasonData;
+
+  if(games.length<3){
+    throw new ProviderError(
+      `V aktuální NHL sezoně ${seasonData.season_label} jsou před vybraným utkáním jen ${games.length} dokončené zápasy týmu ${teamName}. Model vyžaduje alespoň 3 a starší sezonu nepoužívá.`,
+      {status:422,code:'NHL_CURRENT_SEASON_TOO_FEW_GAMES'}
+    );
+  }
+
+  const settled=await Promise.allSettled(games.map(game=>fetchNhlBoxscore(game.id)));
+  const boxMetrics=[];
+  for(let i=0;i<games.length;i+=1){
+    const result=settled[i];
+    if(result.status!=='fulfilled')continue;
+    const box=result.value;
+    const home=String(box?.homeTeam?.abbrev||'').toUpperCase();
+    const side=home===abbrev?'homeTeam':'awayTeam';
+    const oppSide=side==='homeTeam'?'awayTeam':'homeTeam';
+    const own=side==='homeTeam'?box?.homeTeam:box?.awayTeam;
+    const opp=oppSide==='homeTeam'?box?.homeTeam:box?.awayTeam;
+
+    const shotsFor=Number(own?.sog);
+    const shotsAgainst=Number(opp?.sog);
+    const goalieSavePct=goalieSavePctForSide(box,side);
+
+    boxMetrics.push({
+      game_id:games[i].id,
+      shots_for:Number.isFinite(shotsFor)?shotsFor:null,
+      shots_against:Number.isFinite(shotsAgainst)?shotsAgainst:null,
+      goalie_save_pct:Number.isFinite(goalieSavePct)?goalieSavePct:null
+    });
+  }
+
+  const firstTime=Math.min(...games.map(game=>Date.parse(game.date)).filter(Number.isFinite));
+  const lastTime=Math.max(...games.map(game=>Date.parse(game.date)).filter(Number.isFinite));
+  const wins=games.filter(game=>game.won).length;
+  const result={
+    source:'NHL API',
+    source_mode:'nhl-current-season-last10',
+    team_abbrev:abbrev,
+    team_name:teamName,
+    season_id:seasonData.season_id,
+    season_label:seasonData.season_label,
+    current_season_only:true,
+    sample_complete:games.length>=10,
+    matches_used:games.length,
+    range:{
+      from:Number.isFinite(firstTime)?new Date(firstTime).toISOString():null,
+      to:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null
+    },
+    wins,
+    losses:games.length-wins,
+    win_pct:roundMetric(100*wins/games.length,1),
+    goals_for:roundMetric(average(games.map(game=>game.goals_for)),2),
+    goals_against:roundMetric(average(games.map(game=>game.goals_against)),2),
+    shots_for:roundMetric(average(boxMetrics.map(row=>row.shots_for)),1),
+    shots_against:roundMetric(average(boxMetrics.map(row=>row.shots_against)),1),
+    goalie_save_pct:roundMetric(average(boxMetrics.map(row=>row.goalie_save_pct)),1),
+    home_form:nhlHomeAwayForm(games,'home'),
+    away_form:nhlHomeAwayForm(games,'away'),
+    last_game_date:Number.isFinite(lastTime)?new Date(lastTime).toISOString():null,
+    boxscores_used:boxMetrics.length
+  };
+
+  if(!Number.isFinite(result.goals_for)||!Number.isFinite(result.goals_against)){
+    throw new ProviderError(
+      `NHL statistiky týmu ${teamName} nejsou kompletní.`,
+      {status:422,code:'NHL_STATS_INCOMPLETE'}
+    );
+  }
+
+  nhlTeamStatsCache.set(cacheKey,{value:result,expires:Date.now()+30*60*1000});
+  return result;
+}
+
 export async function fetchOddsSports(all=true){
   const api=process.env.ODDS_API_KEY;
   if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});
@@ -860,7 +1229,7 @@ async function listOddsUpcoming(sport){
   }
   events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
   const unique=[...new Map(events.map(event=>[`${event.provider}:${event.id}`,event])).values()];
-  const limit=sport==='nba'?20:40;
+  const limit=['nba','nhl'].includes(sport)?20:40;
   return cacheSet(cacheKey,unique.slice(0,limit),5*60*1000);
 }
 
@@ -870,7 +1239,11 @@ export async function listUpcomingMatches(sport){
     const events=await listOddsUpcoming('nba');
     return enrichNbaUpcomingAvailability(events);
   }
-  if(['fifa','nhl'].includes(sport))return listOddsUpcoming(sport);
+  if(sport==='nhl'){
+    const events=await listOddsUpcoming('nhl');
+    return enrichNhlUpcomingAvailability(events);
+  }
+  if(sport==='fifa')return listOddsUpcoming(sport);
   throw new TypeError('Nepodporovaný sport.');
 }
 
