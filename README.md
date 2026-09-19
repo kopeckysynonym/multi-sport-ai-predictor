@@ -126,3 +126,34 @@ FIFA / UEFA predictions now use the same data-availability safety logic as NBA a
 - 10+ completed matches: the model uses the latest 10 matches from the current season only.
 - Previous-season matches are never used as a fallback.
 - If the configured API-Football plan does not expose the current season, the fixture is marked unavailable instead of silently using an older season.
+
+
+## Prediction Tracker
+
+Every successful prediction for a future fixture is persisted before kickoff in a Netlify Blobs store named `prediction-tracker`.
+
+The tracker stores:
+
+- sport
+- home and away teams
+- fixture/event ID and kickoff time
+- prediction timestamp
+- bookmaker odds and odds source
+- tracked market
+- model probability
+- Value Bet
+- expected/predicted score
+- reliability state
+- recommendation state
+- model data source and season
+
+A fixture is stored under a stable event key, so recalculating the same fixture updates its latest pre-match snapshot instead of creating duplicate backtest rows.
+
+Endpoints:
+
+```
+GET /api/tracker?limit=20
+GET /api/tracker?sport=nba&limit=50
+```
+
+The frontend includes a **Prediction Tracker** section that shows recent stored snapshots. Predictions are not stored when the match has already started or the kickoff date is missing.
