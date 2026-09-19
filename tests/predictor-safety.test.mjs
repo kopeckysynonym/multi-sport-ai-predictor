@@ -12,6 +12,7 @@ import {
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
 import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
+import { settlePaperBet, trackerPerformanceSummary } from '../netlify/functions/lib/settlement.mjs';
 import {
   calculateTennisModelFromMatches,
   classifyTennisDataAvailability,
@@ -317,4 +318,42 @@ test('tennis availability uses rolling 12-month thresholds instead of season res
     ).data_status,
     'PŘIPRAVENO'
   );
+});
+
+
+test('automatic settlement computes one-unit simulated win and loss correctly', () => {
+  const base = {
+    tracked_market: 'home',
+    tracked_odds: 2.5,
+    match: { home_team: 'A', away_team: 'B' }
+  };
+
+  const win = settlePaperBet(base, { home: 2, away: 1 }, 'test', '2026-09-20T20:00:00Z');
+  assert.equal(win.status, 'SETTLED');
+  assert.equal(win.simulated_bet.outcome, 'WIN');
+  assert.equal(win.simulated_bet.stake_units, 1);
+  assert.equal(win.simulated_bet.profit_units, 1.5);
+
+  const loss = settlePaperBet(base, { home: 0, away: 1 }, 'test', '2026-09-20T20:00:00Z');
+  assert.equal(loss.simulated_bet.outcome, 'LOSS');
+  assert.equal(loss.simulated_bet.profit_units, -1);
+});
+
+test('Prediction Tracker performance summary calculates running ROI from settled paper bets', () => {
+  const rows = [
+    { settlement: { status: 'SETTLED', simulated_bet: { stake_units: 1, profit_units: 1.5, outcome: 'WIN' } } },
+    { settlement: { status: 'SETTLED', simulated_bet: { stake_units: 1, profit_units: -1, outcome: 'LOSS' } } },
+    { settlement: { status: 'SETTLED', simulated_bet: { stake_units: 1, profit_units: 0, outcome: 'PUSH' } } },
+    { settlement: null }
+  ];
+  const summary = trackerPerformanceSummary(rows);
+  assert.deepEqual(summary, {
+    settled_bets: 3,
+    wins: 1,
+    losses: 1,
+    pushes: 1,
+    stake_units: 3,
+    profit_units: 0.5,
+    roi_pct: 16.7
+  });
 });
