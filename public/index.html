@@ -68,7 +68,8 @@
     <p id="dataAgeRow" class="d-none">Stáří dat: <strong id="dataAge"></strong></p>
     <p id="reliabilityRow" class="d-none">Spolehlivost predikce: <span id="reliability" class="badge"></span></p>
     <p><span id="scoreLabel">Odhad skóre</span>: <strong id="score"></strong></p>
-    <p>Value Bet: <strong id="value"></strong> · <span id="rec" class="badge"></span></p>
+    <p>Edge: <strong id="edge"></strong></p>
+    <p>Expected ROI: <strong id="roi"></strong> · <span id="rec" class="badge"></span></p>
 
     <h5>Pravděpodobnosti</h5>
     <div id="probs"></div>
@@ -166,7 +167,8 @@
             <th>Zápas</th>
             <th>Kurz</th>
             <th>Model %</th>
-            <th>Value Bet</th>
+            <th>Edge</th>
+            <th>Expected ROI</th>
             <th>Predikce</th>
             <th>Spolehlivost</th>
           </tr>
@@ -446,27 +448,32 @@ function renderResult(d,event){
     scoreEl.textContent=d.expected_score?.home+' : '+d.expected_score?.away;
   }
 
-  const value=document.querySelector('#value');
+  const edge=document.querySelector('#edge');
+  const roi=document.querySelector('#roi');
   const rec=document.querySelector('#rec');
   if(d.value_available){
-    const valueText=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
+    const edgeText=signedMetric(d.best_edge_pct,' p. b.');
+    const roiText=signedMetric(d.best_expected_roi_pct,'%');
     if(d.limited_reliability||d.value_informational_only){
-      value.textContent='Informativně '+valueText+' – omezená spolehlivost';
+      edge.textContent='Informativně '+edgeText+' – omezená spolehlivost';
+      roi.textContent='Informativně '+roiText+' – omezená spolehlivost';
       rec.textContent='BEZ DOPORUČENÍ';
       rec.className='badge text-bg-warning';
     }else{
-      value.textContent=valueText;
+      edge.textContent=edgeText;
+      roi.textContent=roiText;
       rec.textContent=d.recommendation;
       rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
     }
   }else{
+    let unavailable='Nedostupné pro tuto analýzu';
     if(d.odds_mode==='demo'){
-      value.textContent='Nedostupný – nejsou dostupné reálné kurzy';
+      unavailable='Nedostupné – nejsou dostupné reálné kurzy';
     }else if(String(d.data_mode||'').includes('league-average')){
-      value.textContent='Nedostupný – model používá náhradní ligová data';
-    }else{
-      value.textContent='Nedostupný pro tuto analýzu';
+      unavailable='Nedostupné – model používá náhradní ligová data';
     }
+    edge.textContent=unavailable;
+    roi.textContent=unavailable;
     rec.textContent='BEZ DOPORUČENÍ';
     rec.className='badge text-bg-warning';
   }
@@ -651,6 +658,12 @@ function trackerOdds(value){
   return n.toFixed(2);
 }
 
+function signedMetric(value,suffix='%'){
+  const n=Number(value);
+  if(!Number.isFinite(n))return '–';
+  return (n>0?'+':'')+n.toFixed(1)+suffix;
+}
+
 function trackerScore(score,row=null){
   if(row?.predicted_winner){
     const pct=Number.isFinite(Number(row.predicted_winner_probability_pct))
@@ -683,16 +696,21 @@ async function loadTrackerHistory(){
     trackerBody.innerHTML=rows.map(row=>{
       const match=[row.match?.home_team,row.match?.away_team].filter(Boolean).join(' vs ');
       const reliability=row.reliability?.label||'–';
-      const value=Number.isFinite(Number(row.value_bet_pct))
-        ? (Number(row.value_bet_pct)>0?'+':'')+Number(row.value_bet_pct).toFixed(1)+'%'
-        : '–';
+      const legacyEdge=Number(row.schema_version)===1 ? row.value_bet_pct : null;
+      const edgeValue=Number.isFinite(Number(row.edge_pct)) ? row.edge_pct : legacyEdge;
+      const roiValue=Number.isFinite(Number(row.expected_roi_pct))
+        ? row.expected_roi_pct
+        : Number(row.schema_version)>=2&&Number.isFinite(Number(row.value_bet_pct))
+          ? row.value_bet_pct
+          : null;
       return `<tr>
         <td>${formatMatchDate(row.prediction_time)||'–'}</td>
         <td>${row.sport_label||row.sport||'–'}</td>
         <td>${match||'–'}</td>
         <td>${trackerOdds(row.tracked_odds)}</td>
         <td>${trackerPercent(row.model_probability_pct)}</td>
-        <td>${value}</td>
+        <td>${signedMetric(edgeValue,' p. b.')}</td>
+        <td>${signedMetric(roiValue,'%')}</td>
         <td>${trackerScore(row.predicted_score,row)}</td>
         <td>${reliability}</td>
       </tr>`;
