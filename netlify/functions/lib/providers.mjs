@@ -560,43 +560,169 @@ async function listCzFootballViaHeadToHead(leagueId){
   return [...new Map(rows.map(row=>[String(row?.fixture?.id),row])).values()];
 }
 
-async function listCzFootballViaOdds(){
-  const sports=await fetchOddsSports(false);
-  const discovered=(sports||[])
-    .filter(row=>String(row?.group||'').toLowerCase().includes('soccer'))
-    .filter(row=>{
-      const key=String(row?.key||'').toLowerCase();
-      const title=String(row?.title||'').toLowerCase();
-      const czech=key.includes('czech')||title.includes('czech');
-      const firstLeague=
-        key.includes('1_liga')||
-        key.includes('first_league')||
-        title.includes('1. liga')||
-        title.includes('1 liga')||
-        title.includes('first league');
-      return czech&&firstLeague;
-    })
-    .map(row=>String(row?.key||''))
-    .filter(Boolean);
+function icsUnescape(value){
+  return String(value||'')
+    .replace(/\\n/gi,' ')
+    .replace(/\\,/g,',')
+    .replace(/\\;/g,';')
+    .replace(/\\\\/g,'\\')
+    .trim();
+}
 
-  const keys=[...new Set(['soccer_czech_republic_1_liga',...discovered])];
-  const results=await Promise.allSettled(keys.map(async key=>({
-    key,
-    events:await fetchOddsEvents(key)
-  })));
+function icsLines(text){
+  const raw=String(text||'').replace(/\r\n/g,'\n').split('\n');
+  const out=[];
+  for(const line of raw){
+    if(/^[ \t]/.test(line)&&out.length)out[out.length-1]+=line.slice(1);
+    else out.push(line);
+  }
+  return out;
+}
+
+function zonedIcsDateToIso(value,timeZone='Europe/Prague'){
+  const match=String(value||'').match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$/);
+  if(!match)return null;
+  const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]);
+  const hour=Number(match[4]||12),minute=Number(match[5]||0),second=Number(match[6]||0);
+  const utcGuess=Date.UTC(year,month-1,day,hour,minute,second);
+  if(match[7])return new Date(utcGuess).toISOString();
+
+  const formatter=new Intl.DateTimeFormat('en-CA',{
+    timeZone,
+    year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit',second:'2-digit',
+    hourCycle:'h23'
+  });
+  const parts=Object.fromEntries(
+    formatter.formatToParts(new Date(utcGuess))
+      .filter(part=>part.type!=='literal')
+      .map(part=>[part.type,part.value])
+  );
+  const represented=Date.UTC(
+    Number(parts.year),Number(parts.month)-1,Number(parts.day),
+    Number(parts.hour),Number(parts.minute),Number(parts.second)
+  );
+  return new Date(utcGuess-(represented-utcGuess)).toISOString();
+}
+
+function canonicalCzTeamName(value){
+  const name=icsUnescape(value);
+  const aliases={
+    skslaviapraha:'Slavia Praha',
+    acspartapraha:'Sparta Praha',
+    fcviktoriaplzen:'Viktoria Plzeň',
+    fcbanikostrava:'Baník Ostrava',
+    sksigmaolomouc:'Sigma Olomouc'
+  };
+  return aliases[normName(name)]||name;
+}
+
+function splitCzCalendarFixture(summary){
+  let text=icsUnescape(summary)
+    .replace(/^\s*(chance liga|fortuna liga)\s*[:\-–]\s*/i,'')
+    .trim();
+  for(const separator of [' - ',' – ',' vs. ',' vs ']){
+    const index=text.indexOf(separator);
+    if(index>0){
+      return [
+        canonicalCzTeamName(text.slice(0,index)),
+        canonicalCzTeamName(text.slice(index+separator.length))
+      ];
+    }
+  }
+  return null;
+}
+
+function parseChanceLigaCalendar(text){
+  const events=[];
+  let current=null;
+  for(const line of icsLines(text)){
+    if(line==='BEGIN:VEVENT'){current={};continue;}
+    if(line==='END:VEVENT'){
+      if(current)events.push(current);
+      current=null;
+      continue;
+    }
+    if(!current)continue;
+    const colon=line.indexOf(':');
+    if(colon<0)continue;
+    const head=line.slice(0,colon);
+    const value=line.slice(colon+1);
+    const name=head.split(';')[0].toUpperCase();
+    if(name==='DTSTART'){
+      const tzMatch=head.match(/TZID=([^;:]+)/i);
+      current.commence_time=zonedIcsDateToIso(value,tzMatch?.[1]||'Europe/Prague');
+    }else if(name==='SUMMARY')current.summary=icsUnescape(value);
+    else if(name==='UID')current.uid=icsUnescape(value);
+    else if(name==='URL')current.url=icsUnescape(value);
+    else if(name==='STATUS')current.status=icsUnescape(value).toUpperCase();
+  }
 
   const now=Date.now();
-  const events=[];
-  for(const result of results){
-    if(result.status!=='fulfilled')continue;
-    for(const item of result.value.events||[]){
-      const event=normalizeUpcomingEvent(item,'the-odds-api',result.value.key);
-      if(event&&eventTime(event.commence_time)>=now)events.push(event);
+  return events
+    .filter(item=>item.status!=='CANCELLED')
+    .map(item=>{
+      const teams=splitCzCalendarFixture(item.summary);
+      if(!teams||!item.commence_time)return null;
+      const [home,away]=teams;
+      const id=item.uid||item.url||`${item.commence_time}:${normName(home)}:${normName(away)}`;
+      return {
+        id:String(id),
+        provider:'chance-liga-calendar',
+        fixture_id:null,
+        event_id:null,
+        sport_key:null,
+        commence_time:item.commence_time,
+        home_team:home,
+        away_team:away,
+        league_id:null,
+        league:'Chance Liga',
+        country:'Czech Republic',
+        venue:null
+      };
+    })
+    .filter(Boolean)
+    .filter(event=>eventTime(event.commence_time)>=now)
+    .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+}
+
+async function listCzFootballViaChanceLiga(){
+  const urls=[
+    'https://chanceliga.cz/kalendar-zapasu/',
+    'https://www.chanceliga.cz/kalendar-zapasu/'
+  ];
+  let lastError=null;
+
+  for(const url of urls){
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),10000);
+    try{
+      const response=await fetch(url,{
+        signal:controller.signal,
+        redirect:'follow',
+        headers:{
+          accept:'text/calendar,text/plain;q=0.9,*/*;q=0.1',
+          'user-agent':'Multi-Sport-AI-Predictor/1.0'
+        }
+      });
+      if(!response.ok)throw new Error(`HTTP ${response.status}`);
+      const text=await response.text();
+      if(!/BEGIN:VCALENDAR/i.test(text))throw new Error('Kalendář nevrátil ICS data.');
+      const events=parseChanceLigaCalendar(text);
+      if(events.length)return events;
+      throw new Error('Kalendář neobsahuje budoucí zápasy.');
+    }catch(error){
+      lastError=error;
+      console.warn('Chance Liga calendar lookup failed:',error.message);
+    }finally{
+      clearTimeout(timer);
     }
   }
 
-  events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
-  return [...new Map(events.map(event=>[event.provider+':'+event.id,event])).values()];
+  throw new ProviderError(
+    `Chance Liga calendar není dostupný: ${lastError?.message||'neznámá chyba'}`,
+    {status:502,code:'CHANCE_LIGA_CALENDAR_UNAVAILABLE'}
+  );
 }
 
 async function listCzFootballUpcoming(){
@@ -646,9 +772,9 @@ async function listCzFootballUpcoming(){
 
   if(!events.length){
     try{
-      events=await listCzFootballViaOdds();
+      events=await listCzFootballViaChanceLiga();
     }catch(error){
-      console.warn('Czech league The Odds API fallback failed:',error.message);
+      console.warn('Czech league official calendar fallback failed:',error.message);
     }
   }
 
