@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyNbaDataAvailability,
   loadApiFootballCzOdds,
   nbaCurrentSeasonScheduleQueries,
   summarizeApiFootballMatchWinner
@@ -127,4 +128,23 @@ test('NBA schedule queries never include a previous season after the new season 
   const queries = nbaCurrentSeasonScheduleQueries('2026-10-20T19:00:00Z');
   assert.deepEqual(queries, [[2027, 2], [2027, 3]]);
   assert.equal(queries.some(([season]) => season === 2026), false);
+});
+
+
+test('NBA upcoming availability blocks analysis when either team has 0-2 current-season games', () => {
+  assert.deepEqual(
+    classifyNbaDataAvailability(0, 0),
+    {
+      analysis_available: false,
+      data_status: 'NEDOSTATEK DAT',
+      reliability_status: 'NEDOSTATEK DAT',
+      minimum_completed_games: 0
+    }
+  );
+
+  assert.equal(classifyNbaDataAvailability(2, 8).analysis_available, false);
+  assert.equal(classifyNbaDataAvailability(2, 8).data_status, 'NEDOSTATEK DAT');
+  assert.equal(classifyNbaDataAvailability(3, 9).analysis_available, true);
+  assert.equal(classifyNbaDataAvailability(3, 9).data_status, 'OMEZENÁ SPOLEHLIVOST');
+  assert.equal(classifyNbaDataAvailability(10, 12).data_status, 'PŘIPRAVENO');
 });
