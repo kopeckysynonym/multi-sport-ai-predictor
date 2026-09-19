@@ -711,10 +711,13 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     match_date: selectedFixture.commence_time,
-    historical_match_range: {
+    rolling_window: {
       from: data.rolling_from,
       to: data.rolling_to
     },
+    historical_match_range: data.actual_match_range || null,
+    latest_available_data_date: data.newest_available_match_date || null,
+    latest_available_data_age_days: data.newest_data_age_days,
     data_age_days: data.data_age_days,
     limited_reliability: limitedReliability,
     reliability_label: limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
@@ -726,7 +729,7 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
       player_a: data.player_a,
       player_b: data.player_b
     },
-    data_source_note: 'ATP/WTA výsledky: rolling okno posledních 12 měsíců. Model kombinuje celkové Elo, Elo na povrchu a poslední formu; kurzy jsou z The Odds API.',
+    data_source_note: 'ATP/WTA výsledky: rolling okno posledních 12 měsíců. UI odděluje hranice rolling okna od skutečného rozsahu zápasů obou hráčů. Model kombinuje celkové Elo, Elo na povrchu a poslední formu; kurzy jsou z The Odds API.',
     data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic
   };
