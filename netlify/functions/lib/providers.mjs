@@ -742,22 +742,6 @@ async function listCzFootballUpcoming(){
   const from=utcDateOffset(0);
   const to=utcDateOffset(35);
 
-  let rows=[];
-  const attempts=[
-    {label:'league-season-window',params:{league:leagueId,season,from,to}},
-    {label:'league-window',params:{league:leagueId,from,to}}
-  ];
-
-  for(const attempt of attempts){
-    try{
-      const payload=await apiFootball('fixtures',attempt.params);
-      rows=payload?.response||[];
-      if(rows.length)break;
-    }catch(error){
-      console.warn('Czech league '+attempt.label+' lookup failed:',error.message);
-    }
-  }
-
   const normalizeApiFootballRows=input=>{
     const now=Date.now();
     return (input||[])
@@ -768,13 +752,27 @@ async function listCzFootballUpcoming(){
       .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
   };
 
-  let events=normalizeApiFootballRows(rows);
+  let events=[];
+  try{
+    events=await listCzFootballViaChanceLiga();
+  }catch(error){
+    console.warn('Czech league official calendar lookup failed:',error.message);
+  }
 
   if(!events.length){
-    try{
-      events=await listCzFootballViaChanceLiga();
-    }catch(error){
-      console.warn('Czech league official calendar fallback failed:',error.message);
+    const attempts=[
+      {label:'league-season-window',params:{league:leagueId,season,from,to}},
+      {label:'league-window',params:{league:leagueId,from,to}}
+    ];
+
+    for(const attempt of attempts){
+      try{
+        const payload=await apiFootball('fixtures',attempt.params);
+        events=normalizeApiFootballRows(payload?.response||[]);
+        if(events.length)break;
+      }catch(error){
+        console.warn('Czech league '+attempt.label+' lookup failed:',error.message);
+      }
     }
   }
 
