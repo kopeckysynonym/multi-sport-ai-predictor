@@ -1,6 +1,13 @@
 import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
 import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
-import { findMatchOdds, getOddsTeamName, liveDataEnabled, loadLiveFootballTeamData, normName } from './providers.mjs';
+import {
+  findMatchOdds,
+  getOddsTeamName,
+  liveDataEnabled,
+  loadApiFootballCzOdds,
+  loadLiveFootballTeamData,
+  normName
+} from './providers.mjs';
 
 function diagnostic(error) {
   if (!error) return null;
@@ -8,6 +15,23 @@ function diagnostic(error) {
     code: error.code || 'UPSTREAM_ERROR',
     message: error.message || 'Live zdroj není dostupný.',
     provider_status: error.providerStatus ?? null,
+  };
+}
+
+function roundedValues(values) {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)]));
+}
+
+function bettingFields({ values, best, used, actionable }) {
+  return {
+    is_actionable: actionable,
+    market_odds: actionable ? used : null,
+    demo_market_odds: actionable ? null : used,
+    value_bets: actionable ? roundedValues(values) : null,
+    demo_value_bets: actionable ? null : roundedValues(values),
+    best_value_market: actionable ? best[0] : null,
+    best_value_pct: actionable ? round(best[1], 1) : null,
+    recommendation: actionable ? recommendation(best[1]) : 'BEZ DOPORUČENÍ',
   };
 }
 
@@ -61,10 +85,27 @@ function oddsFromLookup(lookup, sport, teamA) {
 
 async function loadLiveOdds(sport, teamA, teamB) {
   if (!liveDataEnabled()) {
-    return { odds: null, diagnostic: { code: 'LIVE_DISABLED', message: 'Live kurzy jsou vypnuté.' } };
+    return { odds: null, mode: 'demo', diagnostic: { code: 'LIVE_DISABLED', message: 'Live kurzy jsou vypnuté.' } };
   }
+
+  if (sport === 'cz_football') {
+    try {
+      const result = await loadApiFootballCzOdds(teamA, teamB);
+      const { home, draw, away, ...meta } = result;
+      return {
+        odds: { home, draw, away },
+        mode: 'api-football-odds',
+        diagnostic: null,
+        meta,
+      };
+    } catch (error) {
+      console.warn('API-Football odds fallback:', error.message);
+      return { odds: null, mode: 'demo', diagnostic: diagnostic(error) };
+    }
+  }
+
   if (!process.env.ODDS_API_KEY) {
-    return { odds: null, diagnostic: { code: 'MISSING_KEY', message: 'Chybí ODDS_API_KEY.' } };
+    return { odds: null, mode: 'demo', diagnostic: { code: 'MISSING_KEY', message: 'Chybí ODDS_API_KEY.' } };
   }
 
   try {
@@ -76,11 +117,11 @@ async function loadLiveOdds(sport, teamA, teamB) {
     });
     const odds = oddsFromLookup(lookup, sport, teamA);
     return Object.keys(odds).length
-      ? { odds, diagnostic: null }
-      : { odds: null, diagnostic: { code: 'EMPTY_MARKET', message: 'Pro nalezený zápas nejsou dostupné požadované kurzy.' } };
+      ? { odds, mode: 'the-odds-api-live', diagnostic: null, meta: lookup?.matched_event || null }
+      : { odds: null, mode: 'demo', diagnostic: { code: 'EMPTY_MARKET', message: 'Pro nalezený zápas nejsou dostupné požadované kurzy.' } };
   } catch (error) {
     console.warn('The Odds API fallback:', error.message);
-    return { odds: null, diagnostic: diagnostic(error) };
+    return { odds: null, mode: 'demo', diagnostic: diagnostic(error) };
   }
 }
 
@@ -93,9 +134,13 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   const awayLambda = clamp(b.attack * a.defense * 0.52, 0.2, 4);
   const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 9);
 
-  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds(sport, aName, bName);
+  const liveResult = supplied
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
+    : await loadLiveOdds(sport, aName, bName);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.football;
+  const actionable = Boolean(supplied || live);
+
   const market = normalizedImpliedProbabilities({
     home: Number(used.home || 0),
     draw: Number(used.draw || 0),
@@ -119,13 +164,12 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
     most_likely_score: { home: score[0], away: score[1] },
     probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
-    market_odds: used,
-    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
-    best_value_market: best[0],
-    best_value_pct: round(best[1], 1),
-    recommendation: recommendation(best[1]),
-    data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-') ? (al.mode === bl.mode ? al.mode : 'api-football-mixed') : 'demo-synthetic',
-    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    ...bettingFields({ values, best, used, actionable }),
+    data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-')
+      ? (al.mode === bl.mode ? al.mode : 'api-football-mixed')
+      : 'demo-synthetic',
+    odds_mode: supplied ? 'client-supplied' : liveResult.mode,
+    odds_meta: supplied ? null : liveResult.meta || null,
     data_diagnostics: dataDiagnostics,
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
@@ -143,9 +187,13 @@ export async function predictNba(aName, bName, supplied = null) {
   const pHome = 1 - normalCdf(0, margin, 12);
   const pAway = 1 - pHome;
 
-  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds('nba', aName, bName);
+  const liveResult = supplied
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
+    : await loadLiveOdds('nba', aName, bName);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nba;
+  const actionable = Boolean(supplied || live);
+
   const market = normalizedImpliedProbabilities({ home: Number(used.home || 0), away: Number(used.away || 0) });
   const spread = Number.isFinite(Number(used.spread_home)) ? Number(used.spread_home) : -3.5;
   const pHomeCover = 1 - normalCdf(-spread, margin, 12);
@@ -166,13 +214,10 @@ export async function predictNba(aName, bName, supplied = null) {
     expected_margin: round(margin, 1),
     spread_home: spread,
     probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
-    market_odds: used,
-    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
-    best_value_market: best[0],
-    best_value_pct: round(best[1], 1),
-    recommendation: recommendation(best[1]),
+    ...bettingFields({ values, best, used, actionable }),
     data_mode: 'demo-synthetic',
-    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    odds_mode: supplied ? 'client-supplied' : liveResult.mode,
+    odds_meta: supplied ? null : liveResult.meta || null,
     data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
@@ -187,9 +232,13 @@ export async function predictNhl(aName, bName, supplied = null) {
   const awayLambda = clamp(b.attack * a.defense / 3 * b.powerplay / a.goalie, 1.1, 5.2);
   const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 10);
 
-  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds('nhl', aName, bName);
+  const liveResult = supplied
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
+    : await loadLiveOdds('nhl', aName, bName);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nhl;
+  const actionable = Boolean(supplied || live);
+
   const market = normalizedImpliedProbabilities({
     home: Number(used.home || 0),
     draw: Number(used.draw || 0),
@@ -208,13 +257,10 @@ export async function predictNhl(aName, bName, supplied = null) {
     expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
     most_likely_score: { home: score[0], away: score[1] },
     probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
-    market_odds: used,
-    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
-    best_value_market: best[0],
-    best_value_pct: round(best[1], 1),
-    recommendation: recommendation(best[1]),
+    ...bettingFields({ values, best, used, actionable }),
     data_mode: 'demo-synthetic',
-    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    odds_mode: supplied ? 'client-supplied' : liveResult.mode,
+    odds_meta: supplied ? null : liveResult.meta || null,
     data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
