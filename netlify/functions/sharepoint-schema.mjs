@@ -1,0 +1,56 @@
+import { timingSafeEqual } from 'node:crypto';
+import { json } from './lib/http.mjs';
+import { SharePointPredictionError } from './lib/sharepoint.mjs';
+import { provisionAiPredictionsSchema } from './lib/sharepoint-schema.mjs';
+
+function env(name) {
+  return globalThis.Netlify?.env?.get?.(name) || null;
+}
+
+function secureEqual(left, right) {
+  const a = Buffer.from(String(left || ''), 'utf8');
+  const b = Buffer.from(String(right || ''), 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function requireSyncToken(request) {
+  const expected = env('SHAREPOINT_SYNC_TOKEN');
+  if (!expected) {
+    throw new SharePointPredictionError(
+      'Chybí Netlify environment variable SHAREPOINT_SYNC_TOKEN.',
+      { status: 503, code: 'SHAREPOINT_NOT_CONFIGURED' }
+    );
+  }
+
+  const provided = request.headers.get('x-sharepoint-sync-token');
+  if (!provided || !secureEqual(provided, expected)) {
+    throw new SharePointPredictionError('Neplatná autorizace SharePoint schema endpointu.', {
+      status: 401,
+      code: 'UNAUTHORIZED',
+    });
+  }
+}
+
+export default async request => {
+  if (request.method !== 'POST') return json({ error: 'Použij POST.' }, 405);
+
+  try {
+    requireSyncToken(request);
+    const result = await provisionAiPredictionsSchema();
+    return json({ ok: result.ready, ...result }, result.ready ? 200 : 207);
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error.message || 'SharePoint schema provisioning selhalo.',
+        code: error.code || 'SHAREPOINT_SCHEMA_ERROR',
+        details: error.details || null,
+      },
+      error.status || 500
+    );
+  }
+};
+
+export const config = {
+  path: '/api/sharepoint-schema',
+};
