@@ -129,6 +129,85 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   liveFootballCache.set(ck,r);
   return r;
 }
+
+export function summarizeApiFootballMatchWinner(payload){
+  const home=[],draw=[],away=[];
+  let bookmakers=0;
+  for(const row of payload?.response||[]){
+    for(const bookmaker of row?.bookmakers||[]){
+      let used=false;
+      for(const bet of bookmaker?.bets||[]){
+        if(Number(bet?.id)!==1&&normName(bet?.name)!=='matchwinner')continue;
+        for(const value of bet?.values||[]){
+          const odd=Number(value?.odd);
+          if(!Number.isFinite(odd)||odd<=1)continue;
+          const key=normName(value?.value);
+          if(key==='home'){home.push(odd);used=true;}
+          else if(key==='draw'){draw.push(odd);used=true;}
+          else if(key==='away'){away.push(odd);used=true;}
+        }
+      }
+      if(used)bookmakers+=1;
+    }
+  }
+  const avg=values=>values.length?Number((values.reduce((a,b)=>a+b,0)/values.length).toFixed(3)):null;
+  return {home:avg(home),draw:avg(draw),away:avg(away),bookmakers};
+}
+
+export async function loadApiFootballCzOdds(teamA,teamB){
+  const [idA,idB]=await Promise.all([
+    resolveApiFootballTeamId('cz_football',teamA),
+    resolveApiFootballTeamId('cz_football',teamB)
+  ]);
+
+  const h2h=await apiFootball('fixtures/headtohead',{h2h:`${idA}-${idB}`});
+  const now=Date.now();
+  const future=(h2h?.response||[])
+    .filter(item=>{
+      const when=Date.parse(item?.fixture?.date||0);
+      const status=String(item?.fixture?.status?.short||'');
+      return when>=now&&['NS','TBD'].includes(status);
+    })
+    .sort((x,y)=>Date.parse(x?.fixture?.date||0)-Date.parse(y?.fixture?.date||0));
+
+  const exact=future.find(item=>Number(item?.teams?.home?.id)===idA&&Number(item?.teams?.away?.id)===idB);
+  if(!exact){
+    const reverse=future.find(item=>Number(item?.teams?.home?.id)===idB&&Number(item?.teams?.away?.id)===idA);
+    if(reverse){
+      throw new ProviderError(
+        `Nejbližší vzájemný zápas má opačné pořadí domácí/hosté: ${teamB} vs ${teamA}. Pro model vyber domácí tým jako Tým A.`,
+        {status:422,code:'HOME_AWAY_MISMATCH'}
+      );
+    }
+    throw new ProviderError(
+      `API-Football nenašlo nadcházející zápas ${teamA} vs ${teamB} s dostupným fixture ID.`,
+      {status:404,code:'EVENT_NOT_FOUND'}
+    );
+  }
+
+  const fixtureId=Number(exact?.fixture?.id);
+  if(!fixtureId)throw new ProviderError('Nadcházející zápas nemá fixture ID.',{status:502,code:'MISSING_FIXTURE_ID'});
+
+  const payload=await apiFootball('odds',{fixture:fixtureId,bet:1});
+  const summary=summarizeApiFootballMatchWinner(payload);
+  if(!(summary.home&&summary.draw&&summary.away)){
+    throw new ProviderError(
+      'API-Football pro tento zápas zatím neposkytuje kompletní 1X2 pre-match kurzy.',
+      {status:404,code:'ODDS_NOT_AVAILABLE'}
+    );
+  }
+
+  return {
+    home:summary.home,
+    draw:summary.draw,
+    away:summary.away,
+    bookmakers:summary.bookmakers,
+    fixture_id:fixtureId,
+    commence_time:exact?.fixture?.date||null,
+    provider:'API-Football'
+  };
+}
+
 export async function fetchOddsEvents(key){const api=process.env.ODDS_API_KEY;if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});const u=new URL(`${ODDS_API_BASE}/sports/${key}/events`);u.searchParams.set('apiKey',api);u.searchParams.set('dateFormat','iso');return(await fetchJson(u,{},'The Odds API')).data;}
 export async function fetchEventOdds(key,id,markets='h2h,spreads,totals',regions=null){const api=process.env.ODDS_API_KEY;if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});const u=new URL(`${ODDS_API_BASE}/sports/${key}/events/${id}/odds`);u.searchParams.set('apiKey',api);u.searchParams.set('regions',regions||process.env.ODDS_REGIONS||'eu');u.searchParams.set('markets',markets);u.searchParams.set('oddsFormat','decimal');u.searchParams.set('dateFormat','iso');const{data,response}=await fetchJson(u,{},'The Odds API');return{data,usage:{requests_remaining:response.headers.get('x-requests-remaining'),requests_used:response.headers.get('x-requests-used'),requests_last:response.headers.get('x-requests-last')}};}
 export function findOddsEvent(events,sport,a,b){const wanted=new Set([normName(getOddsTeamName(sport,a)),normName(getOddsTeamName(sport,b))]);return(events||[]).find(e=>{const actual=new Set([normName(e?.home_team),normName(e?.away_team)]);return actual.size===wanted.size&&[...actual].every(v=>wanted.has(v));})||null;}
