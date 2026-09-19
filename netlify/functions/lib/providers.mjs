@@ -5,7 +5,23 @@ export function liveDataEnabled(){return !['0','false','no','off'].includes(Stri
 export function normName(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
 export function getOddsTeamName(sport,team){return TEAM_MAPPING?.[sport]?.[team]?.odds_name||team;}
 export function getOddsSportKey(sport,a,b){const env={cz_football:'ODDS_SPORT_CZ_FOOTBALL',fifa:'ODDS_SPORT_FIFA',nba:'ODDS_SPORT_NBA',nhl:'ODDS_SPORT_NHL'};if(process.env[env[sport]])return process.env[env[sport]];if(sport==='nba')return'basketball_nba';if(sport==='nhl')return'icehockey_nhl';if(sport==='fifa'){const x=TEAM_MAPPING?.fifa?.[a]?.odds_sport_key,y=TEAM_MAPPING?.fifa?.[b]?.odds_sport_key;return x&&x===y?x:null;}return null;}
-export async function apiFootball(endpoint,params={}){const key=process.env.API_FOOTBALL_KEY;if(!key)throw new ProviderError('Chybí API_FOOTBALL_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});const url=new URL(`${API_FOOTBALL_BASE}/${String(endpoint).replace(/^\//,'')}`);for(const[k,v]of Object.entries(params))url.searchParams.set(k,String(v));const{data}=await fetchJson(url,{headers:{'x-apisports-key':key}},'API-Football');if(data?.errors&&Object.keys(data.errors).length)throw new ProviderError('API-Football vrátilo chybu.',{status:502,code:'API_FOOTBALL_ERROR'});return data;}
+function formatApiFootballErrors(errors){
+  if(!errors)return'Neznámá chyba.';
+  if(Array.isArray(errors))return errors.map(v=>String(v)).filter(Boolean).join(' | ')||'Neznámá chyba.';
+  if(typeof errors==='object')return Object.entries(errors).map(([k,v])=>`${k}: ${String(v)}`).join(' | ')||'Neznámá chyba.';
+  return String(errors);
+}
+export async function apiFootball(endpoint,params={}){
+  const key=process.env.API_FOOTBALL_KEY;
+  if(!key)throw new ProviderError('Chybí API_FOOTBALL_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});
+  const url=new URL(`${API_FOOTBALL_BASE}/${String(endpoint).replace(/^\//,'')}`);
+  for(const[k,v]of Object.entries(params))url.searchParams.set(k,String(v));
+  const{data}=await fetchJson(url,{headers:{'x-apisports-key':key}},'API-Football');
+  if(data?.errors&&Object.keys(data.errors).length){
+    throw new ProviderError(`API-Football: ${formatApiFootballErrors(data.errors)}`,{status:502,code:'API_FOOTBALL_ERROR'});
+  }
+  return data;
+}
 export async function resolveApiFootballTeamId(sport,team){const ck=`${sport}:${team}`;if(teamIdCache.has(ck))return teamIdCache.get(ck);const search=TEAM_MAPPING?.[sport]?.[team]?.api_football_search||team,p=await apiFootball('teams',{search}),rows=p?.response||[];if(!rows.length)throw new ProviderError(`API-Football nenašel tým '${team}'.`,{status:404,code:'TEAM_NOT_FOUND'});const exact=rows.find(r=>String(r?.team?.name||'').toLowerCase()===search.toLowerCase()),id=Number((exact||rows[0])?.team?.id);teamIdCache.set(ck,id);return id;}
 export async function loadLiveFootballTeamData(sport,team,fallback){const ck=`${sport}:${team}`;if(liveFootballCache.has(ck))return liveFootballCache.get(ck);const id=await resolveApiFootballTeamId(sport,team),p=await apiFootball('fixtures',{team:id,last:Number(process.env.API_FOOTBALL_RECENT_MATCHES||10)}),scored=[],conceded=[];for(const item of p?.response||[]){const h=item?.teams?.home?.id,a=item?.teams?.away?.id,hg=item?.goals?.home,ag=item?.goals?.away;if(hg==null||ag==null)continue;if(h===id){scored.push(Number(hg));conceded.push(Number(ag));}else if(a===id){scored.push(Number(ag));conceded.push(Number(hg));}}if(scored.length<3)throw new ProviderError(`Málo dokončených zápasů pro '${team}'.`,{status:422,code:'NOT_ENOUGH_MATCHES'});const avg=x=>x.reduce((a,b)=>a+b,0)/x.length,r={attack:avg(scored),defense:avg(conceded),home_adv:fallback.home_adv||.12,matches_used:scored.length};liveFootballCache.set(ck,r);return r;}
 export async function fetchOddsEvents(key){const api=process.env.ODDS_API_KEY;if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});const u=new URL(`${ODDS_API_BASE}/sports/${key}/events`);u.searchParams.set('apiKey',api);u.searchParams.set('dateFormat','iso');return(await fetchJson(u,{},'The Odds API')).data;}
