@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadApiFootballCzOdds, summarizeApiFootballMatchWinner } from '../netlify/functions/lib/providers.mjs';
+import {
+  loadApiFootballCzOdds,
+  nbaCurrentSeasonScheduleQueries,
+  summarizeApiFootballMatchWinner
+} from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
 
 const originalFetch = global.fetch;
@@ -116,4 +120,11 @@ test('limited reliability keeps real value bet informational and blocks SÁZET',
   assert.equal(result.recommendation, 'BEZ DOPORUČENÍ');
   assert.equal(result.recommendation_block_reason, 'OMEZENÁ SPOLEHLIVOST');
   assert.deepEqual(result.market_odds, { home: 2.1, away: 1.8 });
+});
+
+
+test('NBA schedule queries never include a previous season after the new season starts', () => {
+  const queries = nbaCurrentSeasonScheduleQueries('2026-10-20T19:00:00Z');
+  assert.deepEqual(queries, [[2027, 2], [2027, 3]]);
+  assert.equal(queries.some(([season]) => season === 2026), false);
 });
