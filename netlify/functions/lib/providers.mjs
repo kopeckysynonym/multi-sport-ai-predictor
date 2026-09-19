@@ -443,6 +443,11 @@ export function espnSeasonLabel(seasonYear){
   return `${endYear-1}/${String(endYear).slice(-2)}`;
 }
 
+export function nbaCurrentSeasonScheduleQueries(dateValue){
+  const season=espnSeasonYear(dateValue);
+  return [[season,2],[season,3]];
+}
+
 async function espnJson(path,params={}){
   const url=new URL(`${ESPN_NBA_BASE}/${String(path).replace(/^\//,'')}`);
   for(const[k,v]of Object.entries(params)){
@@ -549,7 +554,7 @@ async function lastNbaGames(teamId,targetDate,wanted=10){
 
   // Pouze aktuální NBA sezona: regular season + playoffs.
   // Žádný fallback do předchozí sezony.
-  const queries=[[season,2],[season,3]];
+  const queries=nbaCurrentSeasonScheduleQueries(targetDate);
 
   const settled=await Promise.allSettled(
     queries.map(([seasonYear,seasontype])=>fetchEspnTeamSchedule(teamId,seasonYear,seasontype))
