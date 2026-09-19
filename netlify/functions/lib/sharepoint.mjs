@@ -301,6 +301,68 @@ async function findByIndexedField({ token, siteId, listId, fieldName, value }) {
   return Array.isArray(payload?.value) && payload.value.length ? payload.value[0] : null;
 }
 
+export async function updatePredictionFieldsByPredictionId(predictionId, inputFields) {
+  if (!predictionId) {
+    throw new SharePointPredictionError('Chybí PredictionId pro SharePoint update.', {
+      status: 400,
+      code: 'MISSING_PREDICTION_ID',
+    });
+  }
+
+  if (!inputFields || typeof inputFields !== 'object' || Array.isArray(inputFields)) {
+    throw new SharePointPredictionError('Update fields musí být objekt.', {
+      status: 400,
+      code: 'INVALID_UPDATE_FIELDS',
+    });
+  }
+
+  const fields = {};
+  for (const [key, value] of Object.entries(inputFields)) {
+    if (!ALLOWED_FIELDS.has(key)) continue;
+    if (value !== undefined && value !== null) fields[key] = value;
+  }
+
+  if (!Object.keys(fields).length) {
+    throw new SharePointPredictionError('Pro SharePoint update nejsou žádná platná pole.', {
+      status: 400,
+      code: 'EMPTY_UPDATE_FIELDS',
+    });
+  }
+
+  const siteId = requiredEnv('SHAREPOINT_SITE_ID');
+  const listId = requiredEnv('SHAREPOINT_PREDICTIONS_LIST_ID');
+  const token = await getGraphAccessToken();
+
+  const item = await findByIndexedField({
+    token,
+    siteId,
+    listId,
+    fieldName: 'PredictionId',
+    value: predictionId,
+  });
+
+  if (!item?.id) {
+    throw new SharePointPredictionError('PredictionId v AI_Predictions nebyl nalezen.', {
+      status: 404,
+      code: 'SHAREPOINT_PREDICTION_NOT_FOUND',
+      details: { prediction_id: predictionId },
+    });
+  }
+
+  const url = `${graphItemsUrl(siteId, listId)}/${encodeURIComponent(item.id)}/fields`;
+  const updated = await graphRequest(url, {
+    token,
+    method: 'PATCH',
+    body: fields,
+  });
+
+  return {
+    updated: true,
+    item_id: item.id,
+    fields: updated || fields,
+  };
+}
+
 export async function insertPredictionIfUnique(inputFields) {
   const fields = validatePredictionFields(inputFields);
   const siteId = requiredEnv('SHAREPOINT_SITE_ID');
