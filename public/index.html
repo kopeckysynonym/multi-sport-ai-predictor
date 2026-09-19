@@ -121,7 +121,37 @@
     </div>
 
     <p class="muted mt-3 mb-0" id="modes"></p>
+    <p id="trackerStatus" class="muted small mt-2 mb-0"></p>
     <div id="diagnostics" class="alert alert-warning mt-3 mb-0 d-none"></div>
+  </div>
+
+  <div class="card p-4 mt-3">
+    <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+      <div>
+        <h4 class="mb-1">Prediction Tracker</h4>
+        <p class="muted mb-0">Poslední uložené předzápasové predikce.</p>
+      </div>
+      <button id="loadTracker" type="button" class="btn btn-outline-light">Načíst historii</button>
+    </div>
+    <div id="trackerError" class="alert alert-warning mt-3 d-none"></div>
+    <div id="trackerEmpty" class="muted mt-3 d-none">Zatím nejsou uložené žádné predikce.</div>
+    <div id="trackerTableWrap" class="table-responsive mt-3 d-none">
+      <table class="table table-dark table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Čas predikce</th>
+            <th>Sport</th>
+            <th>Zápas</th>
+            <th>Kurz</th>
+            <th>Model %</th>
+            <th>Value Bet</th>
+            <th>Skóre</th>
+            <th>Spolehlivost</th>
+          </tr>
+        </thead>
+        <tbody id="trackerBody"></tbody>
+      </table>
+    </div>
   </div>
 </main>
 
@@ -136,6 +166,12 @@ const empty=document.querySelector('#empty');
 const loading=document.querySelector('#loading');
 const res=document.querySelector('#result');
 const diagnostics=document.querySelector('#diagnostics');
+const trackerStatus=document.querySelector('#trackerStatus');
+const loadTrackerButton=document.querySelector('#loadTracker');
+const trackerError=document.querySelector('#trackerError');
+const trackerEmpty=document.querySelector('#trackerEmpty');
+const trackerTableWrap=document.querySelector('#trackerTableWrap');
+const trackerBody=document.querySelector('#trackerBody');
 
 let events=[];
 
@@ -460,6 +496,15 @@ function renderResult(d,event){
   }
 
   document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
+  if(d.tracker?.saved){
+    trackerStatus.textContent='Prediction Tracker: predikce byla uložena před zápasem.';
+  }else if(d.tracker?.reason==='MATCH_ALREADY_STARTED_OR_DATE_MISSING'){
+    trackerStatus.textContent='Prediction Tracker: neuloženo – zápas už začal nebo chybí datum.';
+  }else if(d.tracker?.reason){
+    trackerStatus.textContent='Prediction Tracker: uložení se nepodařilo ('+d.tracker.reason+').';
+  }else{
+    trackerStatus.textContent='';
+  }
   showDiagnostics(d);
   res.classList.remove('d-none');
 }
@@ -502,10 +547,74 @@ async function predict(){
   }
 }
 
+
+function trackerPercent(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return '–';
+  return n.toFixed(1)+'%';
+}
+
+function trackerOdds(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return '–';
+  return n.toFixed(2);
+}
+
+function trackerScore(score){
+  if(!score||score.home==null||score.away==null)return '–';
+  return score.home+' : '+score.away;
+}
+
+async function loadTrackerHistory(){
+  trackerError.classList.add('d-none');
+  trackerEmpty.classList.add('d-none');
+  trackerTableWrap.classList.add('d-none');
+  loadTrackerButton.disabled=true;
+  loadTrackerButton.textContent='Načítám…';
+
+  try{
+    const r=await fetch('/api/tracker?limit=20',{cache:'no-store'});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error||'Nepodařilo se načíst Prediction Tracker.');
+
+    const rows=Array.isArray(d.predictions)?d.predictions:[];
+    if(!rows.length){
+      trackerEmpty.classList.remove('d-none');
+      return;
+    }
+
+    trackerBody.innerHTML=rows.map(row=>{
+      const match=[row.match?.home_team,row.match?.away_team].filter(Boolean).join(' vs ');
+      const reliability=row.reliability?.label||'–';
+      const value=Number.isFinite(Number(row.value_bet_pct))
+        ? (Number(row.value_bet_pct)>0?'+':'')+Number(row.value_bet_pct).toFixed(1)+'%'
+        : '–';
+      return `<tr>
+        <td>${formatMatchDate(row.prediction_time)||'–'}</td>
+        <td>${row.sport_label||row.sport||'–'}</td>
+        <td>${match||'–'}</td>
+        <td>${trackerOdds(row.tracked_odds)}</td>
+        <td>${trackerPercent(row.model_probability_pct)}</td>
+        <td>${value}</td>
+        <td>${trackerScore(row.predicted_score)}</td>
+        <td>${reliability}</td>
+      </tr>`;
+    }).join('');
+    trackerTableWrap.classList.remove('d-none');
+  }catch(e){
+    trackerError.textContent=e.message;
+    trackerError.classList.remove('d-none');
+  }finally{
+    loadTrackerButton.disabled=false;
+    loadTrackerButton.textContent='Načíst historii';
+  }
+}
+
 sport.addEventListener('change',loadUpcoming);
 fixture.addEventListener('change',renderFixtureMeta);
 refresh.addEventListener('click',loadUpcoming);
 go.addEventListener('click',predict);
+loadTrackerButton.addEventListener('click',loadTrackerHistory);
 loadUpcoming();
 </script>
 </body>
