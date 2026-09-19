@@ -25,16 +25,24 @@ function roundedValues(values) {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)]));
 }
 
-function bettingFields({ values, best, used, actionable }) {
+export function bettingFields({ values, best, used, actionable, limitedReliability = false }) {
+  const valueAvailable = Boolean(actionable);
+  const recommendationAllowed = valueAvailable && !limitedReliability;
   return {
-    is_actionable: actionable,
-    market_odds: actionable ? used : null,
-    demo_market_odds: actionable ? null : used,
-    value_bets: actionable ? roundedValues(values) : null,
-    demo_value_bets: actionable ? null : roundedValues(values),
-    best_value_market: actionable ? best[0] : null,
-    best_value_pct: actionable ? round(best[1], 1) : null,
-    recommendation: actionable ? recommendation(best[1]) : 'BEZ DOPORUČENÍ',
+    is_actionable: recommendationAllowed,
+    value_available: valueAvailable,
+    value_informational_only: valueAvailable && limitedReliability,
+    recommendation_allowed: recommendationAllowed,
+    market_odds: valueAvailable ? used : null,
+    demo_market_odds: valueAvailable ? null : used,
+    value_bets: valueAvailable ? roundedValues(values) : null,
+    demo_value_bets: valueAvailable ? null : roundedValues(values),
+    best_value_market: valueAvailable ? best[0] : null,
+    best_value_pct: valueAvailable ? round(best[1], 1) : null,
+    recommendation: recommendationAllowed ? recommendation(best[1]) : 'BEZ DOPORUČENÍ',
+    recommendation_block_reason: valueAvailable && limitedReliability
+      ? 'OMEZENÁ SPOLEHLIVOST'
+      : !valueAvailable ? 'NEDOSTUPNÉ REÁLNÉ KURZY' : null,
   };
 }
 
@@ -300,7 +308,7 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
-    ...bettingFields({ values, best, used, actionable }),
+    ...bettingFields({ values, best, used, actionable, limitedReliability }),
     data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-')
       ? (al.mode === bl.mode ? al.mode : 'api-football-mixed')
       : 'demo-synthetic',
@@ -418,7 +426,7 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
-    ...bettingFields({ values, best, used, actionable }),
+    ...bettingFields({ values, best, used, actionable, limitedReliability }),
     data_mode: 'espn-nba-last10',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
@@ -468,6 +476,7 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
     Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)])
   );
   const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const limitedReliability = !hasTeamData;
 
   return {
     sport: 'nhl',
@@ -481,12 +490,12 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
-    ...bettingFields({ values, best, used, actionable }),
+    ...bettingFields({ values, best, used, actionable, limitedReliability }),
     data_mode: hasTeamData ? 'demo-synthetic-team' : 'demo-synthetic-league-average',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
-    limited_reliability: !hasTeamData,
+    limited_reliability: limitedReliability,
     reliability_label: hasTeamData ? 'STANDARDNÍ DEMO MODEL' : 'OMEZENÁ SPOLEHLIVOST',
     data_diagnostics: hasTeamData ? [] : [{
       team: `${aName} / ${bName}`,
