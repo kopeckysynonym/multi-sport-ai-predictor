@@ -1,4 +1,5 @@
 import { listPredictionEntries, updatePredictionSnapshot } from './tracker.mjs';
+import { syncSettlementToSharePoint } from './sharepoint-sync.mjs';
 
 function env(name) {
   try {
@@ -212,8 +213,29 @@ export async function settlePendingPredictions({ now = new Date(), limit = 100 }
     }
 
     if (settlement) {
-      const next = { ...snapshot, settlement };
+      let next = { ...snapshot, settlement };
       await updatePredictionSnapshot(entry.key, next);
+
+      try {
+        const sharepointSettlement = await syncSettlementToSharePoint(next, settlement);
+        next = {
+          ...next,
+          sharepoint_settlement_sync: {
+            status: 'SYNCED',
+            item_id: sharepointSettlement.item_id || null,
+            synced_at: now.toISOString(),
+          },
+        };
+        await updatePredictionSnapshot(entry.key, next);
+      } catch (sharePointError) {
+        diagnostics.push({
+          record_id: snapshot.record_id,
+          source: 'sharepoint-settlement',
+          code: sharePointError.code || 'SHAREPOINT_SETTLEMENT_SYNC_FAILED',
+          message: sharePointError.message,
+        });
+      }
+
       updates.push(next);
     }
   }
