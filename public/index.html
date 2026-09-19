@@ -9,35 +9,53 @@
     body{background:#0b1220;color:#e5e7eb}
     .card{background:#111827;color:#e5e7eb;border-color:#334155}
     .form-select,.form-control{background:#0f172a;color:#fff;border-color:#475569}
+    .form-select:disabled{background:#111827;color:#94a3b8}
     .muted{color:#94a3b8}
+    .match-meta{font-size:.9rem;color:#94a3b8}
+    .prob-note{font-size:.84rem;color:#94a3b8;margin-left:.35rem}
   </style>
 </head>
 <body>
 <main class="container py-5">
   <h1>Multi-Sport AI Predictor</h1>
-  <p class="muted">Fotbal ČR · FIFA/UEFA · NBA · NHL</p>
+  <p class="muted">Skutečné nadcházející zápasy · Fotbal ČR · FIFA/UEFA · NBA · NHL</p>
 
   <div class="card p-4">
-    <div class="row g-3">
-      <div class="col-md-4">
-        <label>Sport</label>
+    <div class="row g-3 align-items-end">
+      <div class="col-lg-3">
+        <label for="sport" class="form-label">Sport</label>
         <select id="sport" class="form-select">
           <option value="cz_football">Fotbal ČR</option>
-          <option value="fifa">FIFA / Euro / Liga mistrů</option>
+          <option value="fifa">FIFA / UEFA</option>
           <option value="nba">NBA</option>
           <option value="nhl">NHL</option>
         </select>
       </div>
-      <div class="col-md-4"><label>Tým A</label><select id="a" class="form-select"></select></div>
-      <div class="col-md-4"><label>Tým B</label><select id="b" class="form-select"></select></div>
-      <div class="col-12"><button id="go" class="btn btn-primary">Spočítat predikci</button></div>
+
+      <div class="col-lg-7">
+        <label for="fixture" class="form-label">Nadcházející utkání</label>
+        <select id="fixture" class="form-select" disabled>
+          <option>Načítám zápasy…</option>
+        </select>
+        <div id="fixtureMeta" class="match-meta mt-1"></div>
+      </div>
+
+      <div class="col-lg-2 d-grid gap-2">
+        <button id="refresh" type="button" class="btn btn-outline-light">Obnovit zápasy</button>
+        <button id="go" type="button" class="btn btn-primary" disabled>Analyzovat zápas</button>
+      </div>
     </div>
   </div>
 
+  <div id="loading" class="alert alert-info mt-3 d-none">Načítám skutečné nadcházející zápasy…</div>
   <div id="error" class="alert alert-danger mt-3 d-none"></div>
+  <div id="empty" class="alert alert-secondary mt-3 d-none">
+    Pro zvolený sport momentálně nebyl nalezen žádný podporovaný nadcházející zápas.
+  </div>
 
   <div id="result" class="card p-4 mt-3 d-none">
     <h3 id="match"></h3>
+    <p id="competitionRow" class="d-none">Soutěž: <strong id="competition"></strong></p>
     <p>Model: <strong id="model"></strong></p>
     <p id="dataSeasonRow" class="d-none">Sezóna dat modelu: <strong id="dataSeason"></strong></p>
     <p id="targetSeasonRow" class="d-none">Sezóna predikovaného zápasu: <strong id="targetSeason"></strong></p>
@@ -47,8 +65,10 @@
     <p id="reliabilityRow" class="d-none">Spolehlivost predikce: <span id="reliability" class="badge"></span></p>
     <p>Odhad skóre: <strong id="score"></strong></p>
     <p>Value Bet: <strong id="value"></strong> · <span id="rec" class="badge"></span></p>
+
     <h5>Pravděpodobnosti</h5>
     <div id="probs"></div>
+
     <p class="muted mt-3 mb-0" id="modes"></p>
     <div id="diagnostics" class="alert alert-warning mt-3 mb-0 d-none"></div>
   </div>
@@ -56,25 +76,17 @@
 
 <script>
 const sport=document.querySelector('#sport');
-const a=document.querySelector('#a');
-const b=document.querySelector('#b');
+const fixture=document.querySelector('#fixture');
+const fixtureMeta=document.querySelector('#fixtureMeta');
+const refresh=document.querySelector('#refresh');
+const go=document.querySelector('#go');
 const err=document.querySelector('#error');
+const empty=document.querySelector('#empty');
+const loading=document.querySelector('#loading');
 const res=document.querySelector('#result');
 const diagnostics=document.querySelector('#diagnostics');
 
-async function teams(){
-  try{
-    const r=await fetch('/api/teams?sport='+encodeURIComponent(sport.value));
-    const d=await r.json();
-    if(!r.ok)throw Error(d.error);
-    a.innerHTML=d.teams.map(x=>`<option>${x}</option>`).join('');
-    b.innerHTML=a.innerHTML;
-    if(d.teams.length>1)b.selectedIndex=1;
-  }catch(e){
-    err.textContent=e.message;
-    err.classList.remove('d-none');
-  }
-}
+let events=[];
 
 function formatDateOnly(value){
   if(!value)return null;
@@ -88,7 +100,7 @@ function formatMatchDate(value){
   const date=new Date(value);
   if(Number.isNaN(date.getTime()))return null;
   return new Intl.DateTimeFormat('cs-CZ',{
-    day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'
+    weekday:'short',day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'
   }).format(date);
 }
 
@@ -98,6 +110,76 @@ function seasonsAgeLabel(value){
   if(n===1)return '1 sezóna';
   if(n>=2&&n<=4)return n+' sezóny';
   return n+' sezon';
+}
+
+function probabilityLabel(key){
+  const labels={
+    home:'Domácí',
+    draw:'Remíza',
+    away:'Hosté',
+    home_moneyline:'Domácí Moneyline',
+    away_moneyline:'Hosté Moneyline',
+    home_cover:'Domácí pokryjí spread',
+    away_cover:'Hosté pokryjí spread'
+  };
+  return labels[key]||key;
+}
+
+function selectedEvent(){
+  const index=Number(fixture.value);
+  return Number.isInteger(index)&&events[index]?events[index]:null;
+}
+
+function renderFixtureMeta(){
+  const event=selectedEvent();
+  if(!event){
+    fixtureMeta.textContent='';
+    return;
+  }
+  const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
+  fixtureMeta.textContent=parts.join(' · ');
+}
+
+async function loadUpcoming(){
+  err.classList.add('d-none');
+  empty.classList.add('d-none');
+  res.classList.add('d-none');
+  loading.classList.remove('d-none');
+  fixture.disabled=true;
+  go.disabled=true;
+  refresh.disabled=true;
+  fixture.innerHTML='<option>Načítám zápasy…</option>';
+  fixtureMeta.textContent='';
+  events=[];
+
+  try{
+    const r=await fetch('/api/upcoming?sport='+encodeURIComponent(sport.value),{cache:'no-store'});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error||'Nepodařilo se načíst zápasy.');
+
+    events=Array.isArray(d.events)?d.events:[];
+    if(!events.length){
+      fixture.innerHTML='<option>Žádný nadcházející zápas</option>';
+      empty.classList.remove('d-none');
+      return;
+    }
+
+    fixture.innerHTML=events.map((event,index)=>{
+      const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
+      const league=event.league?' · '+event.league:'';
+      return `<option value="${index}">${when} — ${event.home_team} vs ${event.away_team}${league}</option>`;
+    }).join('');
+    fixture.disabled=false;
+    go.disabled=false;
+    renderFixtureMeta();
+  }catch(e){
+    fixture.innerHTML='<option>Načtení selhalo</option>';
+    err.textContent=e.message;
+    err.classList.remove('d-none');
+  }finally{
+    loading.classList.add('d-none');
+    refresh.disabled=false;
+  }
 }
 
 function showDiagnostics(d){
@@ -112,108 +194,123 @@ function showDiagnostics(d){
   diagnostics.classList.toggle('d-none',lines.length===0);
 }
 
+function setOptionalRow(rowId,valueId,value){
+  const row=document.querySelector('#'+rowId);
+  if(value){
+    document.querySelector('#'+valueId).textContent=value;
+    row.classList.remove('d-none');
+  }else{
+    row.classList.add('d-none');
+  }
+}
+
+function renderResult(d,event){
+  document.querySelector('#match').textContent=d.team_a+' vs '+d.team_b;
+  document.querySelector('#model').textContent=d.model;
+
+  setOptionalRow('competitionRow','competition',event?.league||null);
+  setOptionalRow('dataSeasonRow','dataSeason',d.data_season_label||null);
+  setOptionalRow('targetSeasonRow','targetSeason',d.target_season_label||null);
+
+  const matchDateText=formatMatchDate(d.match_date||event?.commence_time);
+  setOptionalRow('matchDateRow','matchDate',matchDateText);
+
+  const from=formatDateOnly(d.historical_match_range?.from);
+  const to=formatDateOnly(d.historical_match_range?.to);
+  let historyText=null;
+  if(from&&to){
+    const aCount=d.data_matches_used?.team_a;
+    const bCount=d.data_matches_used?.team_b;
+    const countText=Number.isFinite(aCount)&&Number.isFinite(bCount)
+      ? ` (${aCount} + ${bCount} zápasů)`
+      : '';
+    historyText=from+' – '+to+countText;
+  }
+  setOptionalRow('historyRangeRow','historyRange',historyText);
+
+  const ageText=seasonsAgeLabel(d.data_age_seasons);
+  setOptionalRow('dataAgeRow','dataAge',ageText);
+
+  const reliabilityRow=document.querySelector('#reliabilityRow');
+  const reliability=document.querySelector('#reliability');
+  if(d.reliability_label){
+    reliability.textContent=d.reliability_label;
+    reliability.className='badge '+(d.limited_reliability?'text-bg-warning':'text-bg-success');
+    reliabilityRow.classList.remove('d-none');
+  }else{
+    reliabilityRow.classList.add('d-none');
+  }
+
+  document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
+
+  const value=document.querySelector('#value');
+  const rec=document.querySelector('#rec');
+  if(d.is_actionable){
+    value.textContent=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
+    rec.textContent=d.recommendation;
+    rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
+  }else{
+    if(d.odds_mode==='demo'){
+      value.textContent='Nedostupný – nejsou dostupné reálné kurzy';
+    }else if(String(d.data_mode||'').includes('league-average')){
+      value.textContent='Nedostupný – model používá náhradní ligová data';
+    }else{
+      value.textContent='Nedostupný pro tuto analýzu';
+    }
+    rec.textContent='BEZ DOPORUČENÍ';
+    rec.className='badge text-bg-warning';
+  }
+
+  const probabilityNote=d.limited_reliability
+    ? '<span class="prob-note">Modelová pravděpodobnost – vychází ze starších nebo omezených dat</span>'
+    : '';
+  document.querySelector('#probs').innerHTML=Object.entries(d.probabilities)
+    .map(([k,v])=>`<div class="mb-1">${probabilityLabel(k)}: <strong>${v}%</strong> ${probabilityNote}</div>`)
+    .join('');
+
+  document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
+  showDiagnostics(d);
+  res.classList.remove('d-none');
+}
+
 async function predict(){
+  const event=selectedEvent();
+  if(!event)return;
+
   err.classList.add('d-none');
   res.classList.add('d-none');
   diagnostics.classList.add('d-none');
+  go.disabled=true;
+  go.textContent='Analyzuji…';
+
   try{
     const r=await fetch('/api/predict',{
       method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({sport:sport.value,team_a:a.value,team_b:b.value})
+      body:JSON.stringify({
+        sport:sport.value,
+        team_a:event.home_team,
+        team_b:event.away_team,
+        fixture:event
+      })
     });
     const d=await r.json();
-    if(!r.ok)throw Error(d.error);
-    document.querySelector('#match').textContent=d.team_a+' vs '+d.team_b;
-    document.querySelector('#model').textContent=d.model;
-    const dataSeasonRow=document.querySelector('#dataSeasonRow');
-    const targetSeasonRow=document.querySelector('#targetSeasonRow');
-    if(d.data_season_label){
-      document.querySelector('#dataSeason').textContent=d.data_season_label;
-      dataSeasonRow.classList.remove('d-none');
-    }else{
-      dataSeasonRow.classList.add('d-none');
-    }
-    if(d.target_season_label){
-      document.querySelector('#targetSeason').textContent=d.target_season_label;
-      targetSeasonRow.classList.remove('d-none');
-    }else{
-      targetSeasonRow.classList.add('d-none');
-    }
-
-    const matchDateRow=document.querySelector('#matchDateRow');
-    const matchDateText=formatMatchDate(d.match_date);
-    if(matchDateText){
-      document.querySelector('#matchDate').textContent=matchDateText;
-      matchDateRow.classList.remove('d-none');
-    }else{
-      matchDateRow.classList.add('d-none');
-    }
-
-    const historyRangeRow=document.querySelector('#historyRangeRow');
-    const from=formatDateOnly(d.historical_match_range?.from);
-    const to=formatDateOnly(d.historical_match_range?.to);
-    if(from&&to){
-      const aCount=d.data_matches_used?.team_a;
-      const bCount=d.data_matches_used?.team_b;
-      const countText=Number.isFinite(aCount)&&Number.isFinite(bCount)
-        ? ` (${aCount} + ${bCount} zápasů)`
-        : '';
-      document.querySelector('#historyRange').textContent=from+' – '+to+countText;
-      historyRangeRow.classList.remove('d-none');
-    }else{
-      historyRangeRow.classList.add('d-none');
-    }
-
-    const dataAgeRow=document.querySelector('#dataAgeRow');
-    const ageText=seasonsAgeLabel(d.data_age_seasons);
-    if(ageText){
-      document.querySelector('#dataAge').textContent=ageText;
-      dataAgeRow.classList.remove('d-none');
-    }else{
-      dataAgeRow.classList.add('d-none');
-    }
-
-    const reliabilityRow=document.querySelector('#reliabilityRow');
-    const reliability=document.querySelector('#reliability');
-    if(d.reliability_label){
-      reliability.textContent=d.reliability_label;
-      reliability.className='badge '+(d.limited_reliability?'text-bg-warning':'text-bg-success');
-      reliabilityRow.classList.remove('d-none');
-    }else{
-      reliabilityRow.classList.add('d-none');
-    }
-
-    document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
-    const value=document.querySelector('#value');
-    const rec=document.querySelector('#rec');
-    if(d.is_actionable){
-      value.textContent=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
-      rec.textContent=d.recommendation;
-      rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
-    }else{
-      value.textContent='Nedostupný – používají se demo kurzy';
-      rec.textContent='DEMO – BEZ DOPORUČENÍ';
-      rec.className='badge text-bg-warning';
-    }
-    const probabilityNote=d.limited_reliability
-      ? ' <span class="muted">Modelová pravděpodobnost – vychází ze starších dat</span>'
-      : '';
-    document.querySelector('#probs').innerHTML=Object.entries(d.probabilities)
-      .map(([k,v])=>`<div>${k}: <strong>${v}%</strong>${probabilityNote}</div>`)
-      .join('');
-    document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
-    showDiagnostics(d);
-    res.classList.remove('d-none');
+    if(!r.ok)throw Error(d.error||'Predikce selhala.');
+    renderResult(d,event);
   }catch(e){
     err.textContent=e.message;
     err.classList.remove('d-none');
+  }finally{
+    go.disabled=false;
+    go.textContent='Analyzovat zápas';
   }
 }
 
-sport.addEventListener('change',teams);
-document.querySelector('#go').addEventListener('click',predict);
-teams();
+sport.addEventListener('change',loadUpcoming);
+fixture.addEventListener('change',renderFixtureMeta);
+refresh.addEventListener('click',loadUpcoming);
+go.addEventListener('click',predict);
+loadUpcoming();
 </script>
 </body>
 </html>
