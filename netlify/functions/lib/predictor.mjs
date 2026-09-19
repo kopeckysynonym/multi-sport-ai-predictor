@@ -48,14 +48,24 @@ function formatSeason(sport, season, teamA, teamB) {
   return `${start}/${String(start + 1).slice(-2)}`;
 }
 
-function seasonFromFixtureDate(sport, dateValue, teamA, teamB) {
+function seasonStartFromFixtureDate(sport, dateValue, teamA, teamB) {
   if (!dateValue) return null;
   const date = new Date(dateValue);
   if (Number.isNaN(date.getTime())) return null;
   const year = date.getUTCFullYear();
-  if (isNationalFixture(sport, teamA, teamB)) return String(year);
-  const start = date.getUTCMonth() + 1 >= 7 ? year : year - 1;
-  return formatSeason(sport, start, teamA, teamB);
+  if (isNationalFixture(sport, teamA, teamB)) return year;
+  return date.getUTCMonth() + 1 >= 7 ? year : year - 1;
+}
+
+function seasonFromFixtureDate(sport, dateValue, teamA, teamB) {
+  const start = seasonStartFromFixtureDate(sport, dateValue, teamA, teamB);
+  return start == null ? null : formatSeason(sport, start, teamA, teamB);
+}
+
+function currentSeasonStart(sport, teamA, teamB, date = new Date()) {
+  const year = date.getUTCFullYear();
+  if (isNationalFixture(sport, teamA, teamB)) return year;
+  return date.getUTCMonth() + 1 >= 7 ? year : year - 1;
 }
 
 async function loadTeamData(sport, team) {
@@ -190,12 +200,33 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   const dataSeasonLabel = dataSeasons.length
     ? dataSeasons.map(season => formatSeason(sport, season, aName, bName)).filter(Boolean).join(', ')
     : null;
-  const targetSeasonLabel = seasonFromFixtureDate(
-    sport,
-    liveResult?.meta?.commence_time || null,
-    aName,
-    bName
-  );
+  const matchDate = liveResult?.meta?.commence_time || null;
+  const targetSeasonStart = seasonStartFromFixtureDate(sport, matchDate, aName, bName)
+    ?? currentSeasonStart(sport, aName, bName);
+  const targetSeasonLabel = formatSeason(sport, targetSeasonStart, aName, bName);
+
+  const ranges = [
+    a?.historical_match_range ? { team: aName, ...a.historical_match_range } : null,
+    b?.historical_match_range ? { team: bName, ...b.historical_match_range } : null,
+  ].filter(Boolean);
+  const rangeDates = ranges
+    .flatMap(range => [range.from, range.to])
+    .map(value => ({ value, time: Date.parse(value) }))
+    .filter(item => Number.isFinite(item.time))
+    .sort((x, y) => x.time - y.time);
+  const historicalMatchRange = rangeDates.length ? {
+    from: rangeDates[0].value,
+    to: rangeDates[rangeDates.length - 1].value,
+  } : null;
+
+  const latestDataSeason = dataSeasons.length ? Math.max(...dataSeasons) : null;
+  const dataAgeSeasons = latestDataSeason == null
+    ? null
+    : Math.max(0, targetSeasonStart - latestDataSeason);
+  const limitedReliability = Number.isFinite(dataAgeSeasons) && dataAgeSeasons > 1;
+  const reliabilityLabel = dataAgeSeasons == null
+    ? null
+    : limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST';
 
   return {
     sport,
@@ -215,6 +246,12 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     data_seasons: dataSeasons,
     data_season_label: dataSeasonLabel,
     target_season_label: targetSeasonLabel,
+    match_date: matchDate,
+    historical_match_range: historicalMatchRange,
+    historical_match_range_by_team: ranges,
+    data_age_seasons: dataAgeSeasons,
+    limited_reliability: limitedReliability,
+    reliability_label: reliabilityLabel,
     data_matches_used: {
       team_a: Number.isFinite(Number(a.matches_used)) ? Number(a.matches_used) : null,
       team_b: Number.isFinite(Number(b.matches_used)) ? Number(b.matches_used) : null,
