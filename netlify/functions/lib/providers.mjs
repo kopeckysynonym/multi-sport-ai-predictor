@@ -23,26 +23,38 @@ export async function apiFootball(endpoint,params={}){
   return data;
 }
 export async function resolveApiFootballTeamId(sport,team){const ck=`${sport}:${team}`;if(teamIdCache.has(ck))return teamIdCache.get(ck);const search=TEAM_MAPPING?.[sport]?.[team]?.api_football_search||team,p=await apiFootball('teams',{search}),rows=p?.response||[];if(!rows.length)throw new ProviderError(`API-Football nenašel tým '${team}'.`,{status:404,code:'TEAM_NOT_FOUND'});const exact=rows.find(r=>String(r?.team?.name||'').toLowerCase()===search.toLowerCase()),id=Number((exact||rows[0])?.team?.id);teamIdCache.set(ck,id);return id;}
+function inferFootballSeason(sport,team,date=new Date()){
+  const override=globalThis.Netlify?.env?.get?.('API_FOOTBALL_SEASON');
+  if(override&&/^\d{4}$/.test(String(override)))return Number(override);
+  const year=date.getUTCFullYear(),month=date.getUTCMonth()+1;
+  const nationalTeams=new Set(['France','Spain','Germany','Argentina','Czechia']);
+  if(sport==='fifa'&&nationalTeams.has(team))return year;
+  return month>=7?year:year-1;
+}
+
+async function fetchTeamSeasonFixtures(id,season){
+  return apiFootball('fixtures',{team:id,season,status:'FT-AET-PEN'});
+}
+
 export async function loadLiveFootballTeamData(sport,team,fallback){
   const ck=`${sport}:${team}`;
   if(liveFootballCache.has(ck))return liveFootballCache.get(ck);
 
   const id=await resolveApiFootballTeamId(sport,team);
-  const wanted=Math.max(3,Number(process.env.API_FOOTBALL_RECENT_MATCHES||10));
-  const lookbackDays=Math.max(30,Number(process.env.API_FOOTBALL_LOOKBACK_DAYS||365));
-  const toDate=new Date();
-  const fromDate=new Date(toDate);
-  fromDate.setUTCDate(fromDate.getUTCDate()-lookbackDays);
-  const iso=d=>d.toISOString().slice(0,10);
+  const recentRaw=globalThis.Netlify?.env?.get?.('API_FOOTBALL_RECENT_MATCHES');
+  const wanted=Math.max(3,Number(recentRaw||10));
+  const currentSeason=inferFootballSeason(sport,team);
+  const seasonCandidates=[currentSeason,currentSeason-1];
+  const rows=[];
 
-  const p=await apiFootball('fixtures',{
-    team:id,
-    from:iso(fromDate),
-    to:iso(toDate),
-    status:'FT-AET-PEN'
-  });
+  for(const season of seasonCandidates){
+    const p=await fetchTeamSeasonFixtures(id,season);
+    rows.push(...(p?.response||[]));
+    const completed=rows.filter(item=>item?.goals?.home!=null&&item?.goals?.away!=null).length;
+    if(completed>=wanted)break;
+  }
 
-  const rows=[...(p?.response||[])].sort((x,y)=>{
+  rows.sort((x,y)=>{
     const xd=Date.parse(x?.fixture?.date||0);
     const yd=Date.parse(y?.fixture?.date||0);
     return yd-xd;
@@ -58,7 +70,7 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   }
 
   if(scored.length<3)throw new ProviderError(
-    `Málo dokončených zápasů pro '${team}' za posledních ${lookbackDays} dní.`,
+    `Málo dokončených zápasů pro '${team}' v sezonách ${seasonCandidates.join(' a ')}.`,
     {status:422,code:'NOT_ENOUGH_MATCHES'}
   );
 
@@ -67,7 +79,8 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
     attack:avg(scored),
     defense:avg(conceded),
     home_adv:fallback.home_adv||.12,
-    matches_used:scored.length
+    matches_used:scored.length,
+    seasons_used:seasonCandidates
   };
   liveFootballCache.set(ck,r);
   return r;
