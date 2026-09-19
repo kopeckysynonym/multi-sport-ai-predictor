@@ -102,7 +102,8 @@ test('loads Czech 1X2 odds from API-Football for the selected home-away fixture'
 test('demo odds never produce an actionable betting recommendation', () => {
   const result = bettingFields({
     values: { home: 5.2, away: -5.2 },
-    best: ['home', 5.2],
+    roiValues: { home: 3.1, away: -6.4 },
+    best: ['home', 3.1],
     used: { home: 1.9, away: 2.0 },
     actionable: false,
     limitedReliability: false
@@ -118,7 +119,8 @@ test('demo odds never produce an actionable betting recommendation', () => {
 test('limited reliability keeps real value bet informational and blocks SÁZET', () => {
   const result = bettingFields({
     values: { home_moneyline: 9.5, away_moneyline: -9.5 },
-    best: ['home_moneyline', 9.5],
+    roiValues: { home_moneyline: 12.4, away_moneyline: -10.1 },
+    best: ['home_moneyline', 12.4],
     used: { home: 2.1, away: 1.8 },
     actionable: true,
     limitedReliability: true
@@ -126,6 +128,8 @@ test('limited reliability keeps real value bet informational and blocks SÁZET',
   assert.equal(result.value_available, true);
   assert.equal(result.value_informational_only, true);
   assert.equal(result.best_value_pct, 9.5);
+  assert.equal(result.best_edge_pct, 9.5);
+  assert.equal(result.best_expected_roi_pct, 12.4);
   assert.equal(result.is_actionable, false);
   assert.equal(result.recommendation_allowed, false);
   assert.equal(result.recommendation, 'BEZ DOPORUČENÍ');
@@ -133,6 +137,22 @@ test('limited reliability keeps real value bet informational and blocks SÁZET',
   assert.deepEqual(result.market_odds, { home: 2.1, away: 1.8 });
 });
 
+
+test('standard reliability bases recommendation on Expected ROI while keeping Edge separate', () => {
+  const result = bettingFields({
+    values: { home: 4.0, away: -4.0 },
+    roiValues: { home: -1.5, away: -8.0 },
+    best: ['home', -1.5],
+    used: { home: 1.75, away: 2.2 },
+    actionable: true,
+    limitedReliability: false
+  });
+
+  assert.equal(result.best_edge_pct, 4.0);
+  assert.equal(result.best_expected_roi_pct, -1.5);
+  assert.equal(result.recommendation, 'NEVÁHAT');
+  assert.equal(result.recommendation_allowed, true);
+});
 
 test('NBA schedule queries never include a previous season after the new season starts', () => {
   const queries = nbaCurrentSeasonScheduleQueries('2026-10-20T19:00:00Z');
@@ -220,6 +240,8 @@ test('Prediction Tracker snapshot contains required pre-match fields', () => {
     odds_mode: 'the-odds-api-live',
     best_value_market: 'home_moneyline',
     best_value_pct: 4.7,
+    best_edge_pct: 4.7,
+    best_expected_roi_pct: null,
     value_available: true,
     value_informational_only: false,
     probabilities: { home_moneyline: 57.1, away_moneyline: 42.9 },
@@ -245,7 +267,9 @@ test('Prediction Tracker snapshot contains required pre-match fields', () => {
   assert.equal(snapshot.prediction_time, '2026-09-19T10:00:00.000Z');
   assert.equal(snapshot.tracked_odds, 1.91);
   assert.equal(snapshot.model_probability_pct, 57.1);
-  assert.equal(snapshot.value_bet_pct, 4.7);
+  assert.equal(snapshot.edge_pct, 4.7);
+  assert.equal(snapshot.expected_roi_pct, null);
+  assert.equal(snapshot.value_bet_pct, null);
   assert.deepEqual(snapshot.predicted_score, { home: 118.4, away: 113.2 });
   assert.equal(snapshot.reliability.label, 'STANDARDNÍ SPOLEHLIVOST');
   assert.equal(snapshot.is_pre_match, true);
