@@ -174,35 +174,55 @@ export function summarizeApiFootballMatchWinner(payload){
   return {home:avg(home),draw:avg(draw),away:avg(away),bookmakers};
 }
 
-export async function loadApiFootballCzOdds(teamA,teamB){
+export async function loadApiFootballCzOdds(teamA,teamB,selectedFixture=null){
   const [idA,idB]=await Promise.all([
     resolveApiFootballTeamId('cz_football',teamA),
     resolveApiFootballTeamId('cz_football',teamB)
   ]);
 
-  const h2h=await apiFootball('fixtures/headtohead',{h2h:`${idA}-${idB}`});
-  const now=Date.now();
-  const future=(h2h?.response||[])
-    .filter(item=>{
-      const when=Date.parse(item?.fixture?.date||0);
-      const status=String(item?.fixture?.status?.short||'');
-      return when>=now&&['NS','TBD'].includes(status);
-    })
-    .sort((x,y)=>Date.parse(x?.fixture?.date||0)-Date.parse(y?.fixture?.date||0));
+  let exact=null;
+  if(selectedFixture?.fixture_id){
+    exact={
+      fixture:{
+        id:Number(selectedFixture.fixture_id),
+        date:selectedFixture.commence_time||null,
+        status:{short:'NS'}
+      },
+      teams:{
+        home:{id:idA,name:teamA},
+        away:{id:idB,name:teamB}
+      },
+      league:{
+        id:selectedFixture.league_id||null,
+        name:selectedFixture.league||null,
+        country:selectedFixture.country||null
+      }
+    };
+  }else{
+    const h2h=await apiFootball('fixtures/headtohead',{h2h:`${idA}-${idB}`});
+    const now=Date.now();
+    const future=(h2h?.response||[])
+      .filter(item=>{
+        const when=Date.parse(item?.fixture?.date||0);
+        const status=String(item?.fixture?.status?.short||'');
+        return when>=now&&['NS','TBD'].includes(status);
+      })
+      .sort((x,y)=>Date.parse(x?.fixture?.date||0)-Date.parse(y?.fixture?.date||0));
 
-  const exact=future.find(item=>Number(item?.teams?.home?.id)===idA&&Number(item?.teams?.away?.id)===idB);
-  if(!exact){
-    const reverse=future.find(item=>Number(item?.teams?.home?.id)===idB&&Number(item?.teams?.away?.id)===idA);
-    if(reverse){
+    exact=future.find(item=>Number(item?.teams?.home?.id)===idA&&Number(item?.teams?.away?.id)===idB);
+    if(!exact){
+      const reverse=future.find(item=>Number(item?.teams?.home?.id)===idB&&Number(item?.teams?.away?.id)===idA);
+      if(reverse){
+        throw new ProviderError(
+          `Nejbližší vzájemný zápas má opačné pořadí domácí/hosté: ${teamB} vs ${teamA}. Pro model vyber domácí tým jako Tým A.`,
+          {status:422,code:'HOME_AWAY_MISMATCH'}
+        );
+      }
       throw new ProviderError(
-        `Nejbližší vzájemný zápas má opačné pořadí domácí/hosté: ${teamB} vs ${teamA}. Pro model vyber domácí tým jako Tým A.`,
-        {status:422,code:'HOME_AWAY_MISMATCH'}
+        `API-Football nenašlo nadcházející zápas ${teamA} vs ${teamB} s dostupným fixture ID.`,
+        {status:404,code:'EVENT_NOT_FOUND'}
       );
     }
-    throw new ProviderError(
-      `API-Football nenašlo nadcházející zápas ${teamA} vs ${teamB} s dostupným fixture ID.`,
-      {status:404,code:'EVENT_NOT_FOUND'}
-    );
   }
 
   const fixtureId=Number(exact?.fixture?.id);
@@ -232,6 +252,150 @@ export async function loadApiFootballCzOdds(teamA,teamB){
     commence_time:exact?.fixture?.date||null,
     provider:'API-Football'
   };
+}
+
+
+const upcomingCache=new Map();
+
+function cacheGet(key){
+  const item=upcomingCache.get(key);
+  if(!item||item.expires<=Date.now())return null;
+  return item.value;
+}
+
+function cacheSet(key,value,ttlMs=5*60*1000){
+  upcomingCache.set(key,{value,expires:Date.now()+ttlMs});
+  return value;
+}
+
+function eventTime(value){
+  const time=Date.parse(value||0);
+  return Number.isFinite(time)?time:0;
+}
+
+function normalizeUpcomingEvent(item,provider,sportKey=null){
+  const fixtureId=item?.fixture?.id??null;
+  const home=item?.teams?.home?.name??item?.home_team??null;
+  const away=item?.teams?.away?.name??item?.away_team??null;
+  const commence=item?.fixture?.date??item?.commence_time??null;
+  if(!home||!away||!commence)return null;
+  return {
+    id:provider==='api-football'?String(fixtureId):String(item?.id||''),
+    provider,
+    fixture_id:provider==='api-football'?Number(fixtureId):null,
+    event_id:provider==='the-odds-api'?String(item?.id||''):null,
+    sport_key:sportKey||item?.sport_key||null,
+    commence_time:commence,
+    home_team:home,
+    away_team:away,
+    league_id:item?.league?.id??null,
+    league:item?.league?.name??item?.sport_title??null,
+    country:item?.league?.country??null,
+    venue:item?.fixture?.venue?.name??null
+  };
+}
+
+function utcDateOffset(days){
+  const date=new Date();
+  date.setUTCDate(date.getUTCDate()+days);
+  return date.toISOString().slice(0,10);
+}
+
+async function listCzFootballUpcoming(){
+  const cacheKey='upcoming:cz_football';
+  const cached=cacheGet(cacheKey);
+  if(cached)return cached;
+
+  const leagueId=Number(globalThis.Netlify?.env?.get?.('API_FOOTBALL_CZ_LEAGUE_ID')||process.env.API_FOOTBALL_CZ_LEAGUE_ID||345);
+  const firstWindow=Array.from({length:7},(_,i)=>utcDateOffset(i));
+  const secondWindow=Array.from({length:7},(_,i)=>utcDateOffset(i+7));
+
+  const fetchWindow=async dates=>{
+    const payloads=await Promise.all(dates.map(date=>apiFootball('fixtures',{league:leagueId,date})));
+    return payloads.flatMap(payload=>payload?.response||[]);
+  };
+
+  let rows=await fetchWindow(firstWindow);
+  if(!rows.length)rows=await fetchWindow(secondWindow);
+
+  const now=Date.now();
+  const events=rows
+    .map(row=>normalizeUpcomingEvent(row,'api-football'))
+    .filter(Boolean)
+    .filter(event=>eventTime(event.commence_time)>=now)
+    .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+
+  return cacheSet(cacheKey,events,10*60*1000);
+}
+
+export async function fetchOddsSports(all=true){
+  const api=process.env.ODDS_API_KEY;
+  if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});
+  const u=new URL(`${ODDS_API_BASE}/sports/`);
+  u.searchParams.set('apiKey',api);
+  if(all)u.searchParams.set('all','true');
+  return (await fetchJson(u,{},'The Odds API')).data;
+}
+
+function oddsSportKeysForCategory(sport,sports){
+  if(sport==='nba')return['basketball_nba'];
+  if(sport==='nhl')return['icehockey_nhl'];
+  if(sport==='fifa'){
+    const preferred=new Set([
+      'soccer_fifa_world_cup',
+      'soccer_uefa_champs_league',
+      'soccer_uefa_europa_league',
+      'soccer_uefa_europa_conference_league',
+      'soccer_uefa_nations_league',
+      'soccer_uefa_euro'
+    ]);
+    const discovered=(sports||[])
+      .filter(row=>String(row?.group||'').toLowerCase().includes('soccer'))
+      .filter(row=>{
+        const key=String(row?.key||'');
+        const title=String(row?.title||'').toLowerCase();
+        return preferred.has(key)||
+          title.includes('fifa world cup')||
+          title.includes('champions league')||
+          title.includes('europa league')||
+          title.includes('nations league')||
+          title.includes('uefa euro');
+      })
+      .map(row=>row.key);
+    return [...new Set([...preferred,...discovered])].slice(0,8);
+  }
+  return[];
+}
+
+async function listOddsUpcoming(sport){
+  const cacheKey=`upcoming:${sport}`;
+  const cached=cacheGet(cacheKey);
+  if(cached)return cached;
+
+  const sports=sport==='fifa'?await fetchOddsSports(true):[];
+  const keys=oddsSportKeysForCategory(sport,sports);
+  const results=await Promise.allSettled(keys.map(async key=>({
+    key,
+    events:await fetchOddsEvents(key)
+  })));
+  const now=Date.now();
+  const events=[];
+  for(const result of results){
+    if(result.status!=='fulfilled')continue;
+    for(const item of result.value.events||[]){
+      const event=normalizeUpcomingEvent(item,'the-odds-api',result.value.key);
+      if(event&&eventTime(event.commence_time)>=now)events.push(event);
+    }
+  }
+  events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
+  const unique=[...new Map(events.map(event=>[`${event.provider}:${event.id}`,event])).values()];
+  return cacheSet(cacheKey,unique.slice(0,40),5*60*1000);
+}
+
+export async function listUpcomingMatches(sport){
+  if(sport==='cz_football')return listCzFootballUpcoming();
+  if(['fifa','nba','nhl'].includes(sport))return listOddsUpcoming(sport);
+  throw new TypeError('Nepodporovaný sport.');
 }
 
 export async function fetchOddsEvents(key){const api=process.env.ODDS_API_KEY;if(!api)throw new ProviderError('Chybí ODDS_API_KEY v Netlify environment variables.',{status:503,code:'MISSING_KEY'});const u=new URL(`${ODDS_API_BASE}/sports/${key}/events`);u.searchParams.set('apiKey',api);u.searchParams.set('dateFormat','iso');return(await fetchJson(u,{},'The Odds API')).data;}
