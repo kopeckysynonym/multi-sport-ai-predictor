@@ -83,15 +83,18 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   const currentSeason=inferFootballSeason(sport,team);
   const access=await resolveAccessibleSeasonCandidates(id,currentSeason,wanted);
   const rows=[];
+  const fetchedSeasons=[];
 
   if(access.first_payload){
     rows.push(...(access.first_payload?.response||[]));
+    fetchedSeasons.push(currentSeason);
   }
 
   for(const season of access.seasons){
     if(access.first_payload&&season===currentSeason)continue;
     const p=await fetchTeamSeasonFixtures(id,season);
     rows.push(...(p?.response||[]));
+    fetchedSeasons.push(season);
     const completed=rows.filter(item=>item?.goals?.home!=null&&item?.goals?.away!=null).length;
     if(completed>=wanted)break;
   }
@@ -112,7 +115,7 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   }
 
   if(scored.length<3)throw new ProviderError(
-    `Málo dokončených zápasů pro '${team}' v dostupných sezonách ${access.seasons.join(' a ')}.`,
+    `Málo dokončených zápasů pro '${team}' v dostupných sezonách ${(fetchedSeasons.length?fetchedSeasons:access.seasons).join(' a ')}.`,
     {status:422,code:'NOT_ENOUGH_MATCHES'}
   );
 
@@ -122,7 +125,7 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
     defense:avg(conceded),
     home_adv:fallback.home_adv||.12,
     matches_used:scored.length,
-    seasons_used:access.seasons,
+    seasons_used:fetchedSeasons.length?fetchedSeasons:access.seasons,
     source_mode:access.historical?'api-football-historical':'api-football-live',
     allowed_season_range:access.allowed_range
   };
