@@ -289,9 +289,13 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
     ...(Array.isArray(a.seasons_used) ? a.seasons_used : []),
     ...(Array.isArray(b.seasons_used) ? b.seasons_used : []),
   ])].sort((x, y) => y - x);
-  const dataSeasonLabel = dataSeasons.length
-    ? dataSeasons.map(season => formatSeason(sport, season, aName, bName)).filter(Boolean).join(', ')
-    : null;
+  const dataSeasonLabel = sport === 'fifa'
+    ? (a.season_label === b.season_label
+        ? a.season_label
+        : [a.season_label,b.season_label].filter(Boolean).join(' / '))
+    : dataSeasons.length
+      ? dataSeasons.map(season => formatSeason(sport, season, aName, bName)).filter(Boolean).join(', ')
+      : null;
 
   const matchDate = selectedFixture?.commence_time || liveResult?.meta?.commence_time || null;
   const targetSeasonStart = sport === 'fifa'
