@@ -69,6 +69,23 @@
     <h5>Pravděpodobnosti</h5>
     <div id="probs"></div>
 
+    <div id="nbaStatsSection" class="mt-4 d-none">
+      <h5>NBA data – posledních 10 zápasů</h5>
+      <div class="table-responsive">
+        <table class="table table-dark table-sm align-middle mb-2">
+          <thead>
+            <tr>
+              <th>Metrika</th>
+              <th id="nbaTeamAHeader">Tým A</th>
+              <th id="nbaTeamBHeader">Tým B</th>
+            </tr>
+          </thead>
+          <tbody id="nbaStatsBody"></tbody>
+        </table>
+      </div>
+      <p id="nbaSourceNote" class="muted small mb-0"></p>
+    </div>
+
     <p class="muted mt-3 mb-0" id="modes"></p>
     <div id="diagnostics" class="alert alert-warning mt-3 mb-0 d-none"></div>
   </div>
@@ -110,6 +127,25 @@ function seasonsAgeLabel(value){
   if(n===1)return '1 sezóna';
   if(n>=2&&n<=4)return n+' sezóny';
   return n+' sezon';
+}
+
+function daysAgeLabel(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return null;
+  if(n===1)return '1 den';
+  if(n>=2&&n<=4)return n+' dny';
+  return n+' dní';
+}
+
+function formText(form){
+  if(!form||!form.games)return 'bez vzorku';
+  const ppg=Number.isFinite(form.ppg)?form.ppg.toFixed(1):'–';
+  const papg=Number.isFinite(form.papg)?form.papg.toFixed(1):'–';
+  return `${form.wins}-${form.losses} · ${ppg}/${papg} bodů`;
+}
+
+function metricValue(value,suffix=''){
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(1)+suffix : '–';
 }
 
 function probabilityLabel(key){
@@ -228,7 +264,9 @@ function renderResult(d,event){
   }
   setOptionalRow('historyRangeRow','historyRange',historyText);
 
-  const ageText=seasonsAgeLabel(d.data_age_seasons);
+  const ageText=Number.isFinite(Number(d.data_age_days))
+    ? daysAgeLabel(d.data_age_days)
+    : seasonsAgeLabel(d.data_age_seasons);
   setOptionalRow('dataAgeRow','dataAge',ageText);
 
   const reliabilityRow=document.querySelector('#reliabilityRow');
@@ -267,6 +305,32 @@ function renderResult(d,event){
   document.querySelector('#probs').innerHTML=Object.entries(d.probabilities)
     .map(([k,v])=>`<div class="mb-1">${probabilityLabel(k)}: <strong>${v}%</strong> ${probabilityNote}</div>`)
     .join('');
+
+  const nbaSection=document.querySelector('#nbaStatsSection');
+  if(d.sport==='nba'&&d.nba_team_stats?.team_a&&d.nba_team_stats?.team_b){
+    const aStats=d.nba_team_stats.team_a;
+    const bStats=d.nba_team_stats.team_b;
+    document.querySelector('#nbaTeamAHeader').textContent=d.team_a;
+    document.querySelector('#nbaTeamBHeader').textContent=d.team_b;
+
+    const rows=[
+      ['Bilance posledních 10',aStats.wins+'-'+aStats.losses,bStats.wins+'-'+bStats.losses],
+      ['Body vstřelené / zápas',metricValue(aStats.points_for),metricValue(bStats.points_for)],
+      ['Body obdržené / zápas',metricValue(aStats.points_against),metricValue(bStats.points_against)],
+      ['Pace',metricValue(aStats.pace),metricValue(bStats.pace)],
+      ['Offensive Rating',metricValue(aStats.offensive_rating),metricValue(bStats.offensive_rating)],
+      ['Defensive Rating',metricValue(aStats.defensive_rating),metricValue(bStats.defensive_rating)],
+      ['Domácí forma',formText(aStats.home_form),formText(bStats.home_form)],
+      ['Venkovní forma',formText(aStats.away_form),formText(bStats.away_form)]
+    ];
+    document.querySelector('#nbaStatsBody').innerHTML=rows
+      .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
+      .join('');
+    document.querySelector('#nbaSourceNote').textContent=d.data_source_note||'';
+    nbaSection.classList.remove('d-none');
+  }else{
+    nbaSection.classList.add('d-none');
+  }
 
   document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
   showDiagnostics(d);
