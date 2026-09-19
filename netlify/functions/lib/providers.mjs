@@ -105,13 +105,21 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
     return yd-xd;
   });
 
-  const scored=[],conceded=[];
+  const scored=[],conceded=[],usedFixtureDates=[];
   for(const item of rows){
     if(scored.length>=wanted)break;
     const h=item?.teams?.home?.id,a=item?.teams?.away?.id,hg=item?.goals?.home,ag=item?.goals?.away;
     if(hg==null||ag==null)continue;
-    if(h===id){scored.push(Number(hg));conceded.push(Number(ag));}
-    else if(a===id){scored.push(Number(ag));conceded.push(Number(hg));}
+    const fixtureDate=item?.fixture?.date||null;
+    if(h===id){
+      scored.push(Number(hg));
+      conceded.push(Number(ag));
+      if(fixtureDate)usedFixtureDates.push(fixtureDate);
+    }else if(a===id){
+      scored.push(Number(ag));
+      conceded.push(Number(hg));
+      if(fixtureDate)usedFixtureDates.push(fixtureDate);
+    }
   }
 
   if(scored.length<3)throw new ProviderError(
@@ -120,11 +128,20 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   );
 
   const avg=x=>x.reduce((a,b)=>a+b,0)/x.length;
+  const validDates=usedFixtureDates
+    .map(value=>({value,time:Date.parse(value)}))
+    .filter(item=>Number.isFinite(item.time))
+    .sort((a,b)=>a.time-b.time);
+  const historicalRange=validDates.length?{
+    from:validDates[0].value,
+    to:validDates[validDates.length-1].value
+  }:null;
   const r={
     attack:avg(scored),
     defense:avg(conceded),
     home_adv:fallback.home_adv||.12,
     matches_used:scored.length,
+    historical_match_range:historicalRange,
     seasons_used:fetchedSeasons.length?fetchedSeasons:access.seasons,
     source_mode:access.historical?'api-football-historical':'api-football-live',
     allowed_season_range:access.allowed_range
