@@ -7,6 +7,7 @@ import {
   liveDataEnabled,
   loadApiFootballCzOdds,
   loadLiveFootballTeamData,
+  loadNbaTeamStats,
   normName,
   summarizeEventMarkets
 } from './providers.mjs';
@@ -324,16 +325,36 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
 }
 
 export async function predictNba(aName, bName, supplied = null, selectedFixture = null) {
-  const defaults = { offense: 115.5, defense: 115.5, pace: 100, injury_factor: 1 };
-  const hasTeamData = Boolean(DEMO_DATA.nba[aName] && DEMO_DATA.nba[bName]);
-  const a = DEMO_DATA.nba[aName] || defaults;
-  const b = DEMO_DATA.nba[bName] || defaults;
+  const targetDate = selectedFixture?.commence_time || new Date().toISOString();
+  const [a, b] = await Promise.all([
+    loadNbaTeamStats(aName, targetDate),
+    loadNbaTeamStats(bName, targetDate)
+  ]);
 
-  const pace = ((a.pace + b.pace) / 2) / 100;
-  const home = clamp(((a.offense + b.defense) / 2) * pace * a.injury_factor + 2.4, 85, 140);
-  const away = clamp(((b.offense + a.defense) / 2) * pace * b.injury_factor, 85, 140);
+  const expectedPace = (a.pace + b.pace) / 2;
+  const ratingHome = expectedPace * ((a.offensive_rating + b.defensive_rating) / 2) / 100 + 2.2;
+  const ratingAway = expectedPace * ((b.offensive_rating + a.defensive_rating) / 2) / 100;
+
+  const homeFormEstimate = Number.isFinite(a.home_form?.ppg) && Number.isFinite(b.away_form?.papg)
+    ? (a.home_form.ppg + b.away_form.papg) / 2
+    : null;
+  const awayFormEstimate = Number.isFinite(b.away_form?.ppg) && Number.isFinite(a.home_form?.papg)
+    ? (b.away_form.ppg + a.home_form.papg) / 2
+    : null;
+
+  const home = clamp(
+    Number.isFinite(homeFormEstimate) ? 0.75 * ratingHome + 0.25 * homeFormEstimate : ratingHome,
+    85,
+    145
+  );
+  const away = clamp(
+    Number.isFinite(awayFormEstimate) ? 0.75 * ratingAway + 0.25 * awayFormEstimate : ratingAway,
+    85,
+    145
+  );
+
   const margin = home - away;
-  const pHome = 1 - normalCdf(0, margin, 12);
+  const pHome = 1 - normalCdf(0, margin, 11.5);
   const pAway = 1 - pHome;
 
   const liveResult = supplied
@@ -341,48 +362,81 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
     : await loadLiveOdds('nba', aName, bName, selectedFixture);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nba;
-  const actionable = Boolean(supplied || live) && hasTeamData;
+  const actionable = Boolean(supplied || live);
 
-  const market = normalizedImpliedProbabilities({ home: Number(used.home || 0), away: Number(used.away || 0) });
-  const spread = Number.isFinite(Number(used.spread_home)) ? Number(used.spread_home) : -3.5;
-  const pHomeCover = 1 - normalCdf(-spread, margin, 12);
+  const market = normalizedImpliedProbabilities({
+    home: Number(used.home || 0),
+    away: Number(used.away || 0)
+  });
+  const spread = Number.isFinite(Number(used.spread_home)) ? Number(used.spread_home) : null;
+  const pHomeCover = Number.isFinite(spread) ? 1 - normalCdf(-spread, margin, 11.5) : null;
+
   const probs = {
     home_moneyline: pHome,
     away_moneyline: pAway,
-    home_cover: pHomeCover,
-    away_cover: 1 - pHomeCover
+    ...(Number.isFinite(pHomeCover) ? {
+      home_cover: pHomeCover,
+      away_cover: 1 - pHomeCover
+    } : {})
   };
+
   const values = {
     home_moneyline: valueBet(pHome, market.home ?? pHome),
     away_moneyline: valueBet(pAway, market.away ?? pAway),
   };
   const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
+  const rangeTimes = [
+    a?.range?.from,a?.range?.to,b?.range?.from,b?.range?.to
+  ].filter(Boolean).map(value=>({value,time:Date.parse(value)})).filter(x=>Number.isFinite(x.time)).sort((x,y)=>x.time-y.time);
+  const historicalMatchRange = rangeTimes.length ? {
+    from: rangeTimes[0].value,
+    to: rangeTimes[rangeTimes.length - 1].value
+  } : null;
+
+  const latestGameTime = Math.max(
+    Date.parse(a.last_game_date || 0) || 0,
+    Date.parse(b.last_game_date || 0) || 0
+  );
+  const targetTime = Date.parse(targetDate || 0);
+  const dataAgeDays = latestGameTime && targetTime
+    ? Math.max(0, Math.round((targetTime - latestGameTime) / 86400000))
+    : null;
+  const limitedReliability = Number.isFinite(dataAgeDays) && dataAgeDays > 120;
+
   return {
     sport: 'nba',
     sport_label: SPORT_LABELS.nba,
-    model: hasTeamData ? 'Expected-score + normal margin model' : 'League-average fallback score model',
+    model: 'Last-10 pace + offensive/defensive rating + home/away form',
     team_a: aName,
     team_b: bName,
     selected_fixture: selectedFixture,
     expected_score: { home: round(home, 1), away: round(away, 1) },
     expected_margin: round(margin, 1),
-    spread_home: spread,
+    expected_pace: round(expectedPace, 1),
+    spread_home: Number.isFinite(spread) ? spread : null,
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
     ...bettingFields({ values, best, used, actionable }),
-    data_mode: hasTeamData ? 'demo-synthetic-team' : 'demo-synthetic-league-average',
+    data_mode: 'espn-nba-last10',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
-    limited_reliability: !hasTeamData,
-    reliability_label: hasTeamData ? 'STANDARDNÍ DEMO MODEL' : 'OMEZENÁ SPOLEHLIVOST',
-    data_diagnostics: hasTeamData ? [] : [{
-      team: `${aName} / ${bName}`,
-      code: 'LEAGUE_AVERAGE_FALLBACK',
-      message: 'Pro tuto dvojici zatím nejsou v modelu týmové statistiky; používá se ligový průměr.'
-    }],
+    historical_match_range: historicalMatchRange,
+    data_age_days: dataAgeDays,
+    limited_reliability: limitedReliability,
+    reliability_label: limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
+    data_matches_used: {
+      team_a: a.matches_used,
+      team_b: b.matches_used,
+    },
+    nba_team_stats: {
+      team_a: a,
+      team_b: b
+    },
+    data_source_note: 'ESPN NBA game summaries; pace a offensive/defensive rating jsou dopočítané z boxscore possessions.',
+    data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
 }
