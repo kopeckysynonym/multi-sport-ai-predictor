@@ -61,6 +61,9 @@
     <p id="dataSeasonRow" class="d-none">Sezóna dat modelu: <strong id="dataSeason"></strong></p>
     <p id="targetSeasonRow" class="d-none">Sezóna predikovaného zápasu: <strong id="targetSeason"></strong></p>
     <p id="matchDateRow" class="d-none">Datum zápasu: <strong id="matchDate"></strong></p>
+    <p id="tennisRollingWindowRow" class="d-none">Rolling okno: <strong id="tennisRollingWindow"></strong></p>
+    <p id="tennisActualRangeRow" class="d-none">Skutečný rozsah použitých historických zápasů: <strong id="tennisActualRange"></strong></p>
+    <p id="tennisNewestAgeRow" class="d-none">Stáří nejnovějších dostupných dat: <strong id="tennisNewestAge"></strong></p>
     <p id="historyRangeRow" class="d-none">Rozsah použitých historických zápasů: <strong id="historyRange"></strong></p>
     <p id="dataAgeRow" class="d-none">Stáří dat: <strong id="dataAge"></strong></p>
     <p id="reliabilityRow" class="d-none">Spolehlivost predikce: <span id="reliability" class="badge"></span></p>
@@ -374,7 +377,7 @@ function renderResult(d,event){
   document.querySelector('#model').textContent=d.model;
 
   setOptionalRow('competitionRow','competition',event?.league||null);
-  setOptionalRow('dataSeasonRow','dataSeason',d.data_season_label||null);
+  setOptionalRow('dataSeasonRow','dataSeason',d.sport==='tennis'?null:(d.data_season_label||null));
   setOptionalRow('targetSeasonRow','targetSeason',d.target_season_label||null);
 
   const matchDateText=formatMatchDate(d.match_date||event?.commence_time);
@@ -391,12 +394,35 @@ function renderResult(d,event){
       : '';
     historyText=from+' – '+to+countText;
   }
-  setOptionalRow('historyRangeRow','historyRange',historyText);
 
-  const ageText=Number.isFinite(Number(d.data_age_days))
-    ? daysAgeLabel(d.data_age_days)
-    : seasonsAgeLabel(d.data_age_seasons);
-  setOptionalRow('dataAgeRow','dataAge',ageText);
+  if(d.sport==='tennis'){
+    const rollingFrom=formatDateOnly(d.rolling_window?.from);
+    const rollingTo=formatDateOnly(d.rolling_window?.to);
+    const rollingText=rollingFrom&&rollingTo ? rollingFrom+' – '+rollingTo : null;
+    const newestDate=formatDateOnly(d.latest_available_data_date);
+    const newestAge=Number.isFinite(Number(d.latest_available_data_age_days))
+      ? daysAgeLabel(d.latest_available_data_age_days)
+      : null;
+    const newestText=newestAge
+      ? newestAge+(newestDate?' · nejnovější zápas '+newestDate:'')
+      : newestDate;
+
+    setOptionalRow('tennisRollingWindowRow','tennisRollingWindow',rollingText);
+    setOptionalRow('tennisActualRangeRow','tennisActualRange',historyText);
+    setOptionalRow('tennisNewestAgeRow','tennisNewestAge',newestText);
+    setOptionalRow('historyRangeRow','historyRange',null);
+    setOptionalRow('dataAgeRow','dataAge',null);
+  }else{
+    setOptionalRow('tennisRollingWindowRow','tennisRollingWindow',null);
+    setOptionalRow('tennisActualRangeRow','tennisActualRange',null);
+    setOptionalRow('tennisNewestAgeRow','tennisNewestAge',null);
+    setOptionalRow('historyRangeRow','historyRange',historyText);
+
+    const ageText=Number.isFinite(Number(d.data_age_days))
+      ? daysAgeLabel(d.data_age_days)
+      : seasonsAgeLabel(d.data_age_seasons);
+    setOptionalRow('dataAgeRow','dataAge',ageText);
+  }
 
   const reliabilityRow=document.querySelector('#reliabilityRow');
   const reliability=document.querySelector('#reliability');
