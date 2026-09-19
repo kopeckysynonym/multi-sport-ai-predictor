@@ -210,3 +210,41 @@ Prediction Tracker now settles completed paper bets automatically.
 - Running ROI is `total_profit_units / total_stake_units * 100`.
 
 The Odds API scores endpoint only exposes recently completed games for up to three days, so the scheduled settlement process is intended to capture results shortly after matches finish.
+
+
+## SharePoint AI_Predictions insert
+
+A secured Netlify Function is available at:
+
+```text
+POST /api/sharepoint-predictions
+```
+
+It accepts the same `{ "fields": { ... } }` shape used by Microsoft Graph list-item creation and writes to the configured `AI_Predictions` SharePoint List.
+
+Required Netlify environment variables:
+
+```text
+MS_TENANT_ID=...
+MS_CLIENT_ID=...
+MS_CLIENT_SECRET=...
+SHAREPOINT_SITE_ID=...
+SHAREPOINT_PREDICTIONS_LIST_ID=...
+SHAREPOINT_SYNC_TOKEN=...
+```
+
+The caller must send:
+
+```text
+x-sharepoint-sync-token: <SHAREPOINT_SYNC_TOKEN>
+```
+
+Duplicate handling:
+
+- `PredictionId` is checked first. If it already exists, the endpoint behaves idempotently and returns HTTP 200 without creating another row.
+- `SourceEventKey` is checked second. If a different prediction already exists for the same source event, the endpoint returns HTTP 409 with `DUPLICATE_SOURCE_EVENT_KEY`.
+- The SharePoint columns `PredictionId` and `SourceEventKey` should both be indexed. For strict concurrency-safe one-row-per-event behavior, also enforce unique values on `SourceEventKey`.
+
+The Microsoft Entra app registration used by the function must have Microsoft Graph permission to write to the target SharePoint site/list. Prefer granting the narrowest site-scoped permission that fits the deployment.
+
+The function validates required prediction fields, validates pre-match timestamps, and requires market fields whenever `OddsAvailable=true`. Unknown input fields are ignored rather than forwarded to Microsoft Graph.
