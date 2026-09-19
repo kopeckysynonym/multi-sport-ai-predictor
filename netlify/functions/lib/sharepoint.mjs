@@ -297,8 +297,31 @@ async function findByIndexedField({ token, siteId, listId, fieldName, value }) {
   );
   url.searchParams.set('$top', '1');
 
-  const payload = await graphRequest(url, { token });
-  return Array.isArray(payload?.value) && payload.value.length ? payload.value[0] : null;
+  try {
+    const payload = await graphRequest(url, { token });
+    return Array.isArray(payload?.value) && payload.value.length ? payload.value[0] : null;
+  } catch (error) {
+    const graphStatus = error?.details?.graph_status;
+    const filterFallbackAllowed =
+      error instanceof SharePointPredictionError &&
+      (graphStatus === 400 || graphStatus === 409);
+
+    if (!filterFallbackAllowed) throw error;
+
+    const fallbackUrl = new URL(graphItemsUrl(siteId, listId));
+    fallbackUrl.searchParams.set('$select', 'id');
+    fallbackUrl.searchParams.set(
+      '$expand',
+      'fields($select=PredictionId,SourceEventKey)'
+    );
+    fallbackUrl.searchParams.set('$top', '200');
+
+    const fallbackPayload = await graphRequest(fallbackUrl, { token });
+    const rows = Array.isArray(fallbackPayload?.value) ? fallbackPayload.value : [];
+    return rows.find(item =>
+      String(item?.fields?.[fieldName] || '') === String(value)
+    ) || null;
+  }
 }
 
 export async function updatePredictionFieldsByPredictionId(predictionId, inputFields) {
