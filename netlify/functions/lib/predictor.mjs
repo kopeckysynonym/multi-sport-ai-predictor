@@ -123,7 +123,12 @@ async function loadLiveOdds(sport, teamA, teamB) {
       };
     } catch (error) {
       console.warn('API-Football odds fallback:', error.message);
-      return { odds: null, mode: 'demo', diagnostic: diagnostic(error) };
+      return {
+        odds: null,
+        mode: 'demo',
+        diagnostic: diagnostic(error),
+        meta: error?.fixtureMeta || null,
+      };
     }
   }
 
