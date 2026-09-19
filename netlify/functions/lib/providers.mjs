@@ -151,6 +151,15 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
 }
 
 
+function isCalendarFifaCompetition(fixture){
+  const key=String(fixture?.sport_key||'').toLowerCase();
+  return (
+    key.includes('fifa_world_cup')||
+    key.includes('uefa_euro')||
+    key.includes('world_cup_qual')
+  );
+}
+
 export function fifaSeasonForFixture(fixtureOrDate){
   const fixture=typeof fixtureOrDate==='object'&&fixtureOrDate!==null
     ? fixtureOrDate
@@ -158,15 +167,16 @@ export function fifaSeasonForFixture(fixtureOrDate){
   const date=new Date(fixture?.commence_time||fixture?.date||Date.now());
   const year=date.getUTCFullYear();
   const month=date.getUTCMonth()+1;
-  const key=String(fixture?.sport_key||'').toLowerCase();
 
-  if(
-    key.includes('fifa_world_cup')||
-    key.includes('uefa_euro')||
-    key.includes('world_cup_qual')
-  ) return year;
-
+  if(isCalendarFifaCompetition(fixture))return year;
   return month>=7?year:year-1;
+}
+
+export function fifaSeasonLabelForFixture(season,fixture){
+  const value=Number(season);
+  if(!Number.isFinite(value))return null;
+  if(isCalendarFifaCompetition(fixture))return String(value);
+  return `${value}/${String(value+1).slice(-2)}`;
 }
 
 export function classifyFifaDataAvailability(homeGames,awayGames){
@@ -269,7 +279,7 @@ async function fifaCurrentSeasonGames(teamName,selectedFixture,wanted=10){
   const result={
     team_id:id,
     season,
-    season_label:`${season}/${String(season+1).slice(-2)}`,
+    season_label:fifaSeasonLabelForFixture(season,selectedFixture),
     completed_games_total:allGames.length,
     games:allGames.slice(0,wanted)
   };
