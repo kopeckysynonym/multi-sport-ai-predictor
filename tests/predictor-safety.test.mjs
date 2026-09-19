@@ -12,7 +12,7 @@ import {
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
 import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
-import { settlePaperBet, trackerPerformanceSummary } from '../netlify/functions/lib/settlement.mjs';
+import { extractChanceLigaScoreFromHtml, settlePaperBet, trackerPerformanceSummary } from '../netlify/functions/lib/settlement.mjs';
 import {
   calculateTennisModelFromMatches,
   classifyTennisDataAvailability,
@@ -337,6 +337,39 @@ test('automatic settlement computes one-unit simulated win and loss correctly', 
   const loss = settlePaperBet(base, { home: 0, away: 1 }, 'test', '2026-09-20T20:00:00Z');
   assert.equal(loss.simulated_bet.outcome, 'LOSS');
   assert.equal(loss.simulated_bet.profit_units, -1);
+});
+
+test('Czech result settles actual score even when no real odds were tracked', () => {
+  const snapshot = {
+    tracked_market: null,
+    tracked_odds: null,
+    match: { home_team: 'Sigma Olomouc', away_team: 'Sparta Praha' }
+  };
+  const settled = settlePaperBet(
+    snapshot,
+    { home: 1, away: 2 },
+    'chance-liga-official',
+    '2026-09-20T18:00:00Z'
+  );
+  assert.equal(settled.status, 'SETTLED');
+  assert.deepEqual(settled.actual_score, { home: 1, away: 2 });
+  assert.equal(settled.actual_result, 'AWAY');
+  assert.equal(settled.simulated_bet, null);
+});
+
+test('Chance Liga result parser matches date, teams and final score', () => {
+  const html = `
+    <div>#9 20/09/26 ne 15:00 SIG 1:2<span>video</span> ACS</div>
+    <div>#9 20/09/26 SKS 3:0 PLZ</div>
+  `;
+  const snapshot = {
+    match: {
+      home_team: 'Sigma Olomouc',
+      away_team: 'Sparta Praha',
+      commence_time: '2026-09-20T13:00:00.000Z'
+    }
+  };
+  assert.deepEqual(extractChanceLigaScoreFromHtml(html, snapshot), { home: 1, away: 2 });
 });
 
 test('Prediction Tracker performance summary calculates running ROI from settled paper bets', () => {
