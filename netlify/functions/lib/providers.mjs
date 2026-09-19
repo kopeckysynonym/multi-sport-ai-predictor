@@ -431,10 +431,16 @@ function roundMetric(value,digits=1){
   return Number.isFinite(value)?Number(value.toFixed(digits)):null;
 }
 
-function espnSeasonYear(dateValue){
+export function espnSeasonYear(dateValue){
   const date=new Date(dateValue||Date.now());
   const year=date.getUTCFullYear();
   return date.getUTCMonth()+1>=7?year+1:year;
+}
+
+export function espnSeasonLabel(seasonYear){
+  const endYear=Number(seasonYear);
+  if(!Number.isFinite(endYear))return null;
+  return `${endYear-1}/${String(endYear).slice(-2)}`;
 }
 
 async function espnJson(path,params={}){
@@ -540,10 +546,10 @@ function completedTeamGame(event,teamId,targetTime){
 async function lastNbaGames(teamId,targetDate,wanted=10){
   const targetTime=Date.parse(targetDate||new Date().toISOString());
   const season=espnSeasonYear(targetDate);
-  const queries=[
-    [season,2],[season,3],
-    [season-1,3],[season-1,2]
-  ];
+
+  // Pouze aktuální NBA sezona: regular season + playoffs.
+  // Žádný fallback do předchozí sezony.
+  const queries=[[season,2],[season,3]];
 
   const settled=await Promise.allSettled(
     queries.map(([seasonYear,seasontype])=>fetchEspnTeamSchedule(teamId,seasonYear,seasontype))
@@ -561,13 +567,14 @@ async function lastNbaGames(teamId,targetDate,wanted=10){
     .sort((a,b)=>Date.parse(b.date||0)-Date.parse(a.date||0))
     .slice(0,wanted);
 
-  if(unique.length<wanted){
+  if(unique.length<3){
     throw new ProviderError(
-      `ESPN NBA poskytlo jen ${unique.length} dokončených zápasů před vybraným utkáním; model vyžaduje ${wanted}.`,
-      {status:422,code:'NBA_NOT_ENOUGH_GAMES'}
+      `V aktuální NBA sezoně ${espnSeasonLabel(season)} jsou před vybraným utkáním jen ${unique.length} dokončené zápasy. Model vyžaduje alespoň 3 a starší sezonu už nepoužívá.`,
+      {status:422,code:'NBA_CURRENT_SEASON_TOO_FEW_GAMES'}
     );
   }
-  return unique;
+
+  return {games:unique,season};
 }
 
 function boxTeam(summary,teamId){
@@ -598,7 +605,7 @@ export async function loadNbaTeamStats(teamName,targetDate){
   if(cached&&cached.expires>Date.now())return cached.value;
 
   const team=await resolveEspnNbaTeam(teamName);
-  const games=await lastNbaGames(team.id,targetDate,10);
+  const {games,season}=await lastNbaGames(team.id,targetDate,10);
   const summaryResults=await Promise.allSettled(
     games.map(game=>fetchEspnNbaSummary(game.id))
   );
@@ -629,9 +636,10 @@ export async function loadNbaTeamStats(teamName,targetDate){
     });
   }
 
-  if(gameMetrics.length<6){
+  const minimumBoxscores=Math.min(3,games.length);
+  if(gameMetrics.length<minimumBoxscores){
     throw new ProviderError(
-      `ESPN NBA poskytlo boxscore data pro pace/rating jen u ${gameMetrics.length} z 10 zápasů týmu ${teamName}.`,
+      `ESPN NBA poskytlo boxscore data pro pace/rating jen u ${gameMetrics.length} z ${games.length} zápasů týmu ${teamName}. Model vyžaduje alespoň ${minimumBoxscores}.`,
       {status:422,code:'NBA_NOT_ENOUGH_BOXSCORES'}
     );
   }
@@ -644,6 +652,10 @@ export async function loadNbaTeamStats(teamName,targetDate){
     source_mode:'espn-nba-last10',
     team_id:String(team.id),
     team_name:team.displayName||teamName,
+    season_year:season,
+    season_label:espnSeasonLabel(season),
+    current_season_only:true,
+    sample_complete:games.length>=10,
     matches_used:games.length,
     boxscores_used:gameMetrics.length,
     range:{
