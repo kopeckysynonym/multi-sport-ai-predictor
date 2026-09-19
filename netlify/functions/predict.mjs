@@ -1,6 +1,7 @@
 import { json } from './lib/http.mjs';
 import { predictMatch } from './lib/predictor.mjs';
-import { savePredictionSnapshot } from './lib/tracker.mjs';
+import { savePredictionSnapshot, updatePredictionSnapshot } from './lib/tracker.mjs';
+import { syncPredictionSnapshotToSharePoint } from './lib/sharepoint-sync.mjs';
 export default async request => {
   if (request.method !== 'POST') return json({ error: 'Použij POST.' }, 405);
   try {
@@ -9,6 +10,39 @@ export default async request => {
     let tracker;
     try {
       tracker = await savePredictionSnapshot(result, body.fixture || null);
+
+      if (tracker?.saved && tracker?.snapshot) {
+        try {
+          const sharepoint = await syncPredictionSnapshotToSharePoint(tracker.snapshot);
+          const snapshotWithSync = {
+            ...tracker.snapshot,
+            sharepoint_sync: {
+              status: sharepoint.synced ? 'SYNCED' : 'SKIPPED',
+              created: sharepoint.created ?? null,
+              duplicate: sharepoint.duplicate ?? null,
+              item_id: sharepoint.item_id ?? null,
+              reason: sharepoint.reason ?? null,
+              synced_at: new Date().toISOString(),
+            },
+          };
+          await updatePredictionSnapshot(tracker.key, snapshotWithSync);
+          tracker = {
+            ...tracker,
+            snapshot: snapshotWithSync,
+            sharepoint,
+          };
+        } catch (sharePointError) {
+          console.warn('SharePoint prediction sync failed:', sharePointError.message);
+          tracker = {
+            ...tracker,
+            sharepoint: {
+              synced: false,
+              reason: sharePointError.code || 'SHAREPOINT_SYNC_FAILED',
+              message: sharePointError.message,
+            },
+          };
+        }
+      }
     } catch (trackerError) {
       console.warn('Prediction Tracker save failed:', trackerError.message);
       tracker = { saved: false, reason: 'TRACKER_SAVE_FAILED' };
