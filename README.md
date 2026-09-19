@@ -157,3 +157,29 @@ GET /api/tracker?sport=nba&limit=50
 ```
 
 The frontend includes a **Prediction Tracker** section that shows recent stored snapshots. Predictions are not stored when the match has already started or the kickoff date is missing.
+
+
+## ATP / WTA tennis
+
+The app now supports upcoming ATP and WTA singles matches discovered dynamically from The Odds API.
+
+Tennis uses a rolling 12-month window instead of a season reset:
+
+- fewer than 5 matches for either player in the previous 12 months: `NEDOSTATEK DAT`
+- 5-9 matches: `OMEZENÁ SPOLEHLIVOST`
+- 10+ matches: standard sample, unless the data for one player is older than 60 days
+- no previous-season cutoff is applied; only the last 365 days before the selected match are considered
+
+The tennis model combines:
+
+- overall Elo calculated chronologically over the rolling window
+- surface-specific Elo
+- recent form from the last 10 matches
+- recent form on the selected surface
+- tournament surface inferred from the The Odds API tennis sport key / title
+
+Current match-winner odds come from The Odds API. Tennis tournament coverage includes ATP and WTA competitions exposed by its active `tennis_atp_*` and `tennis_wta_*` sport keys.
+
+Historical result data are loaded from Jeff Sackmann-compatible public CSV sources, with an archival mirror fallback. These datasets are CC BY-NC-SA; attribution and non-commercial-use requirements apply.
+
+Tennis predictions are saved to Prediction Tracker with the selected market, price, model probability, Value Bet, predicted winner, surface, reliability state, and prediction timestamp.
