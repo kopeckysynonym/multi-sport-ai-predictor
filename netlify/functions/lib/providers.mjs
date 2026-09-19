@@ -1,6 +1,6 @@
 import { TEAM_MAPPING } from './data.mjs';
 import { fetchJson, ProviderError } from './http.mjs';
-const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map();let apiFootballSeasonRangeCache=null;
+const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map(),fifaCurrentSeasonCache=new Map();let apiFootballSeasonRangeCache=null;
 export function liveDataEnabled(){return !['0','false','no','off'].includes(String(process.env.LIVE_DATA_ENABLED||'true').toLowerCase());}
 export function normName(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
 export function getOddsTeamName(sport,team){return TEAM_MAPPING?.[sport]?.[team]?.odds_name||team;}
@@ -148,6 +148,222 @@ export async function loadLiveFootballTeamData(sport,team,fallback){
   };
   liveFootballCache.set(ck,r);
   return r;
+}
+
+
+export function fifaSeasonForFixture(fixtureOrDate){
+  const fixture=typeof fixtureOrDate==='object'&&fixtureOrDate!==null
+    ? fixtureOrDate
+    : {commence_time:fixtureOrDate};
+  const date=new Date(fixture?.commence_time||fixture?.date||Date.now());
+  const year=date.getUTCFullYear();
+  const month=date.getUTCMonth()+1;
+  const key=String(fixture?.sport_key||'').toLowerCase();
+
+  if(
+    key.includes('fifa_world_cup')||
+    key.includes('uefa_euro')||
+    key.includes('world_cup_qual')
+  ) return year;
+
+  return month>=7?year:year-1;
+}
+
+export function classifyFifaDataAvailability(homeGames,awayGames){
+  const home=Number(homeGames);
+  const away=Number(awayGames);
+  const valid=Number.isFinite(home)&&Number.isFinite(away);
+  const minimum=valid?Math.min(home,away):0;
+
+  if(!valid||minimum<3){
+    return {
+      analysis_available:false,
+      data_status:'NEDOSTATEK DAT',
+      reliability_status:'NEDOSTATEK DAT',
+      minimum_completed_games:valid?minimum:null
+    };
+  }
+  if(minimum<10){
+    return {
+      analysis_available:true,
+      data_status:'OMEZENÁ SPOLEHLIVOST',
+      reliability_status:'OMEZENÁ SPOLEHLIVOST',
+      minimum_completed_games:minimum
+    };
+  }
+  return {
+    analysis_available:true,
+    data_status:'PŘIPRAVENO',
+    reliability_status:'STANDARDNÍ SPOLEHLIVOST',
+    minimum_completed_games:minimum
+  };
+}
+
+async function fifaCurrentSeasonGames(teamName,selectedFixture,wanted=10){
+  const season=fifaSeasonForFixture(selectedFixture);
+  const cacheKey=`${normName(teamName)}:${season}:${String(selectedFixture?.commence_time||'').slice(0,10)}`;
+  const cached=fifaCurrentSeasonCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  if(apiFootballSeasonRangeCache&&season>apiFootballSeasonRangeCache.max){
+    throw new ProviderError(
+      `API-Football free plán neposkytuje sezonu ${season}; dostupné jsou sezony ${apiFootballSeasonRangeCache.min}-${apiFootballSeasonRangeCache.max}. Starší sezonu model pro FIFA/UEFA nepoužije.`,
+      {status:422,code:'FIFA_CURRENT_SEASON_UNAVAILABLE'}
+    );
+  }
+
+  const id=await resolveApiFootballTeamId('fifa',teamName);
+  let payload;
+  try{
+    payload=await fetchTeamSeasonFixtures(id,season);
+  }catch(error){
+    const range=parseAllowedSeasonRange(error);
+    if(range){
+      apiFootballSeasonRangeCache=range;
+      if(season>range.max){
+        throw new ProviderError(
+          `API-Football free plán neposkytuje sezonu ${season}; dostupné jsou sezony ${range.min}-${range.max}. Starší sezonu model pro FIFA/UEFA nepoužije.`,
+          {status:422,code:'FIFA_CURRENT_SEASON_UNAVAILABLE'}
+        );
+      }
+    }
+    throw error;
+  }
+
+  const targetTime=Date.parse(selectedFixture?.commence_time||new Date().toISOString());
+  const rows=(payload?.response||[])
+    .filter(item=>{
+      const when=Date.parse(item?.fixture?.date||0);
+      const hg=item?.goals?.home,ag=item?.goals?.away;
+      return Number.isFinite(when)&&when<targetTime&&hg!=null&&ag!=null;
+    })
+    .sort((a,b)=>Date.parse(b?.fixture?.date||0)-Date.parse(a?.fixture?.date||0));
+
+  const allGames=[];
+  for(const item of rows){
+    const h=Number(item?.teams?.home?.id);
+    const a=Number(item?.teams?.away?.id);
+    const hg=Number(item?.goals?.home);
+    const ag=Number(item?.goals?.away);
+    if(h===id){
+      allGames.push({
+        date:item?.fixture?.date||null,
+        home_away:'home',
+        goals_for:hg,
+        goals_against:ag,
+        won:hg>ag,
+        draw:hg===ag
+      });
+    }else if(a===id){
+      allGames.push({
+        date:item?.fixture?.date||null,
+        home_away:'away',
+        goals_for:ag,
+        goals_against:hg,
+        won:ag>hg,
+        draw:hg===ag
+      });
+    }
+  }
+
+  const result={
+    team_id:id,
+    season,
+    season_label:`${season}/${String(season+1).slice(-2)}`,
+    completed_games_total:allGames.length,
+    games:allGames.slice(0,wanted)
+  };
+  fifaCurrentSeasonCache.set(cacheKey,{value:result,expires:Date.now()+30*60*1000});
+  return result;
+}
+
+function footballForm(games,location){
+  const rows=games.filter(game=>game.home_away===location);
+  if(!rows.length)return {
+    games:0,wins:0,draws:0,losses:0,gfpg:null,gapg:null
+  };
+  const wins=rows.filter(game=>game.won).length;
+  const draws=rows.filter(game=>game.draw).length;
+  return {
+    games:rows.length,
+    wins,
+    draws,
+    losses:rows.length-wins-draws,
+    gfpg:Number((rows.reduce((sum,g)=>sum+g.goals_for,0)/rows.length).toFixed(2)),
+    gapg:Number((rows.reduce((sum,g)=>sum+g.goals_against,0)/rows.length).toFixed(2))
+  };
+}
+
+export async function loadFifaTeamCurrentSeasonData(teamName,selectedFixture,wanted=10){
+  const seasonData=await fifaCurrentSeasonGames(teamName,selectedFixture,wanted);
+  const games=seasonData.games;
+
+  if(games.length<3){
+    throw new ProviderError(
+      `V aktuální sezoně ${seasonData.season_label} jsou před vybraným utkáním jen ${games.length} dokončené zápasy týmu ${teamName}. Model vyžaduje alespoň 3 a starší sezonu nepoužívá.`,
+      {status:422,code:'FIFA_CURRENT_SEASON_TOO_FEW_GAMES'}
+    );
+  }
+
+  const avg=values=>values.reduce((sum,v)=>sum+v,0)/values.length;
+  const dates=games.map(game=>({value:game.date,time:Date.parse(game.date||0)}))
+    .filter(item=>Number.isFinite(item.time))
+    .sort((a,b)=>a.time-b.time);
+
+  return {
+    attack:avg(games.map(game=>game.goals_for)),
+    defense:avg(games.map(game=>game.goals_against)),
+    home_adv:0.1,
+    matches_used:games.length,
+    historical_match_range:dates.length?{
+      from:dates[0].value,
+      to:dates[dates.length-1].value
+    }:null,
+    seasons_used:[seasonData.season],
+    season_label:seasonData.season_label,
+    current_season_only:true,
+    sample_complete:games.length>=10,
+    home_form:footballForm(games,'home'),
+    away_form:footballForm(games,'away'),
+    source_mode:'api-football-current-season'
+  };
+}
+
+async function enrichFifaUpcomingAvailability(events){
+  const enriched=await Promise.all(events.map(async event=>{
+    try{
+      const [home,away]=await Promise.all([
+        fifaCurrentSeasonGames(event.home_team,event,10),
+        fifaCurrentSeasonGames(event.away_team,event,10)
+      ]);
+      const status=classifyFifaDataAvailability(
+        home.completed_games_total,
+        away.completed_games_total
+      );
+      return {
+        ...event,
+        ...status,
+        fifa_season_label:home.season_label||away.season_label||null,
+        current_season_games:{
+          home:home.completed_games_total,
+          away:away.completed_games_total
+        }
+      };
+    }catch(error){
+      console.warn('FIFA/UEFA upcoming availability check failed:',error.message);
+      return {
+        ...event,
+        analysis_available:false,
+        data_status:'NEDOSTATEK DAT',
+        reliability_status:'NEDOSTATEK DAT',
+        minimum_completed_games:null,
+        current_season_games:{home:null,away:null},
+        availability_error:error.message,
+        availability_code:error.code||'FIFA_DATA_UNAVAILABLE'
+      };
+    }
+  }));
+  return enriched;
 }
 
 export function summarizeApiFootballMatchWinner(payload){
@@ -1229,7 +1445,7 @@ async function listOddsUpcoming(sport){
   }
   events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
   const unique=[...new Map(events.map(event=>[`${event.provider}:${event.id}`,event])).values()];
-  const limit=['nba','nhl'].includes(sport)?20:40;
+  const limit=['nba','nhl'].includes(sport)?20:sport==='fifa'?12:40;
   return cacheSet(cacheKey,unique.slice(0,limit),5*60*1000);
 }
 
@@ -1243,7 +1459,10 @@ export async function listUpcomingMatches(sport){
     const events=await listOddsUpcoming('nhl');
     return enrichNhlUpcomingAvailability(events);
   }
-  if(sport==='fifa')return listOddsUpcoming(sport);
+  if(sport==='fifa'){
+    const events=await listOddsUpcoming('fifa');
+    return enrichFifaUpcomingAvailability(events);
+  }
   throw new TypeError('Nepodporovaný sport.');
 }
 
