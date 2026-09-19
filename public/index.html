@@ -97,10 +97,17 @@ async function predict(){
     document.querySelector('#match').textContent=d.team_a+' vs '+d.team_b;
     document.querySelector('#model').textContent=d.model;
     document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
-    document.querySelector('#value').textContent=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
+    const value=document.querySelector('#value');
     const rec=document.querySelector('#rec');
-    rec.textContent=d.recommendation;
-    rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
+    if(d.is_actionable){
+      value.textContent=(d.best_value_pct>0?'+':'')+d.best_value_pct+'%';
+      rec.textContent=d.recommendation;
+      rec.className='badge '+(d.recommendation==='SÁZET'?'text-bg-success':'text-bg-secondary');
+    }else{
+      value.textContent='Nedostupný – používají se demo kurzy';
+      rec.textContent='DEMO – BEZ DOPORUČENÍ';
+      rec.className='badge text-bg-warning';
+    }
     document.querySelector('#probs').innerHTML=Object.entries(d.probabilities).map(([k,v])=>`<div>${k}: <strong>${v}%</strong></div>`).join('');
     document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
     showDiagnostics(d);
