@@ -366,6 +366,7 @@ const ESPN_NBA_BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nb
 const nbaTeamDirectoryCache={value:null,expires:0};
 const nbaTeamStatsCache=new Map();
 const nbaSummaryCache=new Map();
+const nbaSeasonScheduleCache=new Map();
 
 function numberFromScore(score){
   if(score==null)return null;
@@ -499,8 +500,21 @@ export async function resolveEspnNbaTeam(teamName){
 }
 
 async function fetchEspnTeamSchedule(teamId,season,seasontype){
-  const payload=await espnJson(`teams/${teamId}/schedule`,{season,seasontype});
-  return payload?.events||[];
+  const cacheKey=`${teamId}:${season}:${seasontype}`;
+  const cached=nbaSeasonScheduleCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+
+  const promise=espnJson(`teams/${teamId}/schedule`,{season,seasontype})
+    .then(payload=>payload?.events||[]);
+  nbaSeasonScheduleCache.set(cacheKey,{value:promise,expires:Date.now()+30*60*1000});
+  try{
+    const value=await promise;
+    nbaSeasonScheduleCache.set(cacheKey,{value,expires:Date.now()+30*60*1000});
+    return value;
+  }catch(error){
+    nbaSeasonScheduleCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function fetchEspnNbaSummary(eventId){
@@ -546,6 +560,97 @@ function completedTeamGame(event,teamId,targetTime){
     won:pointsFor>pointsAgainst,
     opponent:opponent?.team?.displayName||opponent?.team?.name||null
   };
+}
+
+export function classifyNbaDataAvailability(homeGames,awayGames){
+  const home=Number(homeGames);
+  const away=Number(awayGames);
+  const valid=Number.isFinite(home)&&Number.isFinite(away);
+  const minimum=valid?Math.min(home,away):0;
+
+  if(!valid||minimum<3){
+    return {
+      analysis_available:false,
+      data_status:'NEDOSTATEK DAT',
+      reliability_status:'NEDOSTATEK DAT',
+      minimum_completed_games:valid?minimum:null
+    };
+  }
+  if(minimum<10){
+    return {
+      analysis_available:true,
+      data_status:'OMEZENÁ SPOLEHLIVOST',
+      reliability_status:'OMEZENÁ SPOLEHLIVOST',
+      minimum_completed_games:minimum
+    };
+  }
+  return {
+    analysis_available:true,
+    data_status:'PŘIPRAVENO',
+    reliability_status:'STANDARDNÍ SPOLEHLIVOST',
+    minimum_completed_games:minimum
+  };
+}
+
+async function nbaCurrentSeasonCompletedCount(teamName,targetDate){
+  const team=await resolveEspnNbaTeam(teamName);
+  const season=espnSeasonYear(targetDate);
+  const targetTime=Date.parse(targetDate||new Date().toISOString());
+  const queries=nbaCurrentSeasonScheduleQueries(targetDate);
+
+  const settled=await Promise.allSettled(
+    queries.map(([seasonYear,seasontype])=>fetchEspnTeamSchedule(team.id,seasonYear,seasontype))
+  );
+  const games=[];
+  for(const result of settled){
+    if(result.status!=='fulfilled')continue;
+    for(const event of result.value||[]){
+      const game=completedTeamGame(event,team.id,targetTime);
+      if(game)games.push(game);
+    }
+  }
+
+  const unique=[...new Map(games.map(game=>[game.id,game])).values()];
+  return {
+    team_id:String(team.id),
+    team_name:team.displayName||teamName,
+    season_year:season,
+    season_label:espnSeasonLabel(season),
+    completed_games:unique.length
+  };
+}
+
+async function enrichNbaUpcomingAvailability(events){
+  const enriched=await Promise.all(events.map(async event=>{
+    try{
+      const [home,away]=await Promise.all([
+        nbaCurrentSeasonCompletedCount(event.home_team,event.commence_time),
+        nbaCurrentSeasonCompletedCount(event.away_team,event.commence_time)
+      ]);
+      const status=classifyNbaDataAvailability(home.completed_games,away.completed_games);
+      return {
+        ...event,
+        ...status,
+        nba_season_label:home.season_label||away.season_label||null,
+        current_season_games:{
+          home:home.completed_games,
+          away:away.completed_games
+        }
+      };
+    }catch(error){
+      console.warn('NBA upcoming data availability check failed:',error.message);
+      return {
+        ...event,
+        analysis_available:false,
+        data_status:'NEDOSTATEK DAT',
+        reliability_status:'NEDOSTATEK DAT',
+        minimum_completed_games:null,
+        current_season_games:{home:null,away:null},
+        availability_error:error.message
+      };
+    }
+  }));
+  return enriched;
 }
 
 async function lastNbaGames(teamId,targetDate,wanted=10){
@@ -755,12 +860,17 @@ async function listOddsUpcoming(sport){
   }
   events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
   const unique=[...new Map(events.map(event=>[`${event.provider}:${event.id}`,event])).values()];
-  return cacheSet(cacheKey,unique.slice(0,40),5*60*1000);
+  const limit=sport==='nba'?20:40;
+  return cacheSet(cacheKey,unique.slice(0,limit),5*60*1000);
 }
 
 export async function listUpcomingMatches(sport){
   if(sport==='cz_football')return listCzFootballUpcoming();
-  if(['fifa','nba','nhl'].includes(sport))return listOddsUpcoming(sport);
+  if(sport==='nba'){
+    const events=await listOddsUpcoming('nba');
+    return enrichNbaUpcomingAvailability(events);
+  }
+  if(['fifa','nhl'].includes(sport))return listOddsUpcoming(sport);
   throw new TypeError('Nepodporovaný sport.');
 }
 
