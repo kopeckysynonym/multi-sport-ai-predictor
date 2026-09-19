@@ -125,9 +125,19 @@ export function buildPredictionSnapshot(result, fixture = null, now = new Date()
       recommendation_allowed: Boolean(result?.recommendation_allowed),
     },
     recommendation: result?.recommendation || 'BEZ DOPORUČENÍ',
+    model_name: result?.model || null,
     data_mode: result?.data_mode || null,
     data_season_label: result?.data_season_label || null,
+    data_matches_used: result?.data_matches_used || null,
     historical_match_range: result?.historical_match_range || null,
+    rolling_window: result?.rolling_window || null,
+    latest_available_data_date: result?.latest_available_data_date || null,
+    latest_available_data_age_days: Number.isFinite(Number(result?.latest_available_data_age_days))
+      ? Number(result.latest_available_data_age_days)
+      : null,
+    data_age_days: Number.isFinite(Number(result?.data_age_days))
+      ? Number(result.data_age_days)
+      : null,
     is_pre_match: Number.isFinite(matchTime) ? predictionMs < matchTime : false,
   };
 }
