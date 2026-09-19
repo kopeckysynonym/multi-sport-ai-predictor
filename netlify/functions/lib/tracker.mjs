@@ -84,7 +84,7 @@ export function buildPredictionSnapshot(result, fixture = null, now = new Date()
   };
 
   return {
-    schema_version: 1,
+    schema_version: 2,
     record_id: id || `${safePart(match.home_team)}-${safePart(match.away_team)}-${safePart(matchDate)}`,
     sport: result?.sport || null,
     sport_label: result?.sport_label || null,
@@ -96,8 +96,16 @@ export function buildPredictionSnapshot(result, fixture = null, now = new Date()
     tracked_odds: trackedOdds(result),
     model_probability_pct: trackedProbability(result),
     probabilities: result?.probabilities || null,
-    value_bet_pct: Number.isFinite(Number(result?.best_value_pct))
-      ? Number(result.best_value_pct)
+    edge_pct: Number.isFinite(Number(result?.best_edge_pct))
+      ? Number(result.best_edge_pct)
+      : Number.isFinite(Number(result?.best_value_pct))
+        ? Number(result.best_value_pct)
+        : null,
+    expected_roi_pct: Number.isFinite(Number(result?.best_expected_roi_pct))
+      ? Number(result.best_expected_roi_pct)
+      : null,
+    value_bet_pct: Number.isFinite(Number(result?.best_expected_roi_pct))
+      ? Number(result.best_expected_roi_pct)
       : null,
     value_available: Boolean(result?.value_available),
     value_informational_only: Boolean(result?.value_informational_only),
