@@ -35,6 +35,29 @@ function bettingFields({ values, best, used, actionable }) {
   };
 }
 
+const NATIONAL_TEAMS = new Set(['France', 'Spain', 'Germany', 'Argentina', 'Czechia']);
+
+function isNationalFixture(sport, teamA, teamB) {
+  return sport === 'fifa' && NATIONAL_TEAMS.has(teamA) && NATIONAL_TEAMS.has(teamB);
+}
+
+function formatSeason(sport, season, teamA, teamB) {
+  const start = Number(season);
+  if (!Number.isFinite(start)) return null;
+  if (isNationalFixture(sport, teamA, teamB)) return String(start);
+  return `${start}/${String(start + 1).slice(-2)}`;
+}
+
+function seasonFromFixtureDate(sport, dateValue, teamA, teamB) {
+  if (!dateValue) return null;
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getUTCFullYear();
+  if (isNationalFixture(sport, teamA, teamB)) return String(year);
+  const start = date.getUTCMonth() + 1 >= 7 ? year : year - 1;
+  return formatSeason(sport, start, teamA, teamB);
+}
+
 async function loadTeamData(sport, team) {
   const fallback = DEMO_DATA?.[sport]?.[team];
   if (!fallback) throw new TypeError(`Tým '${team}' není podporován pro sport '${sport}'.`);
@@ -155,6 +178,20 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     bl.diagnostic ? { team: bName, ...bl.diagnostic } : null,
   ].filter(Boolean);
 
+  const dataSeasons = [...new Set([
+    ...(Array.isArray(a.seasons_used) ? a.seasons_used : []),
+    ...(Array.isArray(b.seasons_used) ? b.seasons_used : []),
+  ])].sort((x, y) => y - x);
+  const dataSeasonLabel = dataSeasons.length
+    ? dataSeasons.map(season => formatSeason(sport, season, aName, bName)).filter(Boolean).join(', ')
+    : null;
+  const targetSeasonLabel = seasonFromFixtureDate(
+    sport,
+    liveResult?.meta?.commence_time || null,
+    aName,
+    bName
+  );
+
   return {
     sport,
     sport_label: SPORT_LABELS[sport],
@@ -170,6 +207,13 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
       : 'demo-synthetic',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
+    data_seasons: dataSeasons,
+    data_season_label: dataSeasonLabel,
+    target_season_label: targetSeasonLabel,
+    data_matches_used: {
+      team_a: Number.isFinite(Number(a.matches_used)) ? Number(a.matches_used) : null,
+      team_b: Number.isFinite(Number(b.matches_used)) ? Number(b.matches_used) : null,
+    },
     data_diagnostics: dataDiagnostics,
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
