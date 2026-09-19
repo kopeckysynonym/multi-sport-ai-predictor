@@ -11,6 +11,7 @@ import {
   summarizeApiFootballMatchWinner
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
+import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
 
 const originalFetch = global.fetch;
 const originalFootballKey = process.env.API_FOOTBALL_KEY;
@@ -199,4 +200,48 @@ test('FIFA UEFA availability follows the 0-2 / 3-9 / 10+ current-season rule', (
   const ready = classifyFifaDataAvailability(10, 14);
   assert.equal(ready.analysis_available, true);
   assert.equal(ready.data_status, 'PŘIPRAVENO');
+});
+
+
+test('Prediction Tracker snapshot contains required pre-match fields', () => {
+  const now = new Date('2026-09-19T10:00:00Z');
+  const result = {
+    sport: 'nba',
+    sport_label: 'NBA',
+    team_a: 'Boston Celtics',
+    team_b: 'Denver Nuggets',
+    match_date: '2026-09-20T18:00:00Z',
+    market_odds: { home: 1.91, away: 2.02 },
+    odds_mode: 'the-odds-api-live',
+    best_value_market: 'home_moneyline',
+    best_value_pct: 4.7,
+    value_available: true,
+    value_informational_only: false,
+    probabilities: { home_moneyline: 57.1, away_moneyline: 42.9 },
+    expected_score: { home: 118.4, away: 113.2 },
+    reliability_label: 'STANDARDNÍ SPOLEHLIVOST',
+    limited_reliability: false,
+    recommendation_allowed: true,
+    recommendation: 'SÁZET',
+    data_mode: 'espn-nba-current-season-last10',
+    data_season_label: '2026/27'
+  };
+  const fixture = {
+    event_id: 'evt-123',
+    home_team: 'Boston Celtics',
+    away_team: 'Denver Nuggets',
+    commence_time: '2026-09-20T18:00:00Z',
+    league: 'NBA'
+  };
+
+  const snapshot = buildPredictionSnapshot(result, fixture, now);
+  assert.equal(snapshot.sport, 'nba');
+  assert.equal(snapshot.match.home_team, 'Boston Celtics');
+  assert.equal(snapshot.prediction_time, '2026-09-19T10:00:00.000Z');
+  assert.equal(snapshot.tracked_odds, 1.91);
+  assert.equal(snapshot.model_probability_pct, 57.1);
+  assert.equal(snapshot.value_bet_pct, 4.7);
+  assert.deepEqual(snapshot.predicted_score, { home: 118.4, away: 113.2 });
+  assert.equal(snapshot.reliability.label, 'STANDARDNÍ SPOLEHLIVOST');
+  assert.equal(snapshot.is_pre_match, true);
 });
