@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyFifaDataAvailability,
   classifyNbaDataAvailability,
   classifyNhlDataAvailability,
+  fifaSeasonForFixture,
   loadApiFootballCzOdds,
   nbaCurrentSeasonScheduleQueries,
   nhlSeasonId,
@@ -165,6 +167,36 @@ test('NHL upcoming availability blocks analysis when either team has 0-2 current
   assert.equal(limited.data_status, 'OMEZENÁ SPOLEHLIVOST');
 
   const ready = classifyNhlDataAvailability(10, 12);
+  assert.equal(ready.analysis_available, true);
+  assert.equal(ready.data_status, 'PŘIPRAVENO');
+});
+
+
+test('FIFA UEFA availability follows the 0-2 / 3-9 / 10+ current-season rule', () => {
+  assert.equal(
+    fifaSeasonForFixture({
+      commence_time: '2026-10-20T19:00:00Z',
+      sport_key: 'soccer_uefa_champs_league'
+    }),
+    2026
+  );
+  assert.equal(
+    fifaSeasonForFixture({
+      commence_time: '2026-06-20T19:00:00Z',
+      sport_key: 'soccer_fifa_world_cup'
+    }),
+    2026
+  );
+
+  const blocked = classifyFifaDataAvailability(2, 6);
+  assert.equal(blocked.analysis_available, false);
+  assert.equal(blocked.data_status, 'NEDOSTATEK DAT');
+
+  const limited = classifyFifaDataAvailability(4, 9);
+  assert.equal(limited.analysis_available, true);
+  assert.equal(limited.data_status, 'OMEZENÁ SPOLEHLIVOST');
+
+  const ready = classifyFifaDataAvailability(10, 14);
   assert.equal(ready.analysis_available, true);
   assert.equal(ready.data_status, 'PŘIPRAVENO');
 });
