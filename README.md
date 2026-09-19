@@ -89,3 +89,13 @@ FGA + 0.44 * FTA - OREB + TOV
 ```
 
 The NBA prediction model combines both teams' last-10 pace and offensive/defensive ratings, then blends in the home team's home form and the away team's road form. There is no league-average prediction fallback: if enough real game/boxscore data cannot be loaded, the prediction endpoint returns an explicit data error instead of generating a betting recommendation.
+
+
+## Current-season-only NBA rule
+
+For NBA predictions, historical games are restricted to the season containing the selected fixture. The backend queries only that season's regular-season and playoff schedules and never fills the sample with games from the previous season.
+
+- Uses up to the latest 10 completed games from the current season.
+- Requires at least 3 completed current-season games to produce the NBA model.
+- If fewer than 10 current-season games are available, the prediction remains marked as limited reliability and no betting recommendation is issued.
+- Previous-season games are excluded completely once the selected fixture belongs to the new season.
