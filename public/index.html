@@ -39,6 +39,8 @@
   <div id="result" class="card p-4 mt-3 d-none">
     <h3 id="match"></h3>
     <p>Model: <strong id="model"></strong></p>
+    <p id="dataSeasonRow" class="d-none">Sezóna dat modelu: <strong id="dataSeason"></strong></p>
+    <p id="targetSeasonRow" class="d-none">Sezóna predikovaného zápasu: <strong id="targetSeason"></strong></p>
     <p>Odhad skóre: <strong id="score"></strong></p>
     <p>Value Bet: <strong id="value"></strong> · <span id="rec" class="badge"></span></p>
     <h5>Pravděpodobnosti</h5>
@@ -96,6 +98,20 @@ async function predict(){
     if(!r.ok)throw Error(d.error);
     document.querySelector('#match').textContent=d.team_a+' vs '+d.team_b;
     document.querySelector('#model').textContent=d.model;
+    const dataSeasonRow=document.querySelector('#dataSeasonRow');
+    const targetSeasonRow=document.querySelector('#targetSeasonRow');
+    if(d.data_season_label){
+      document.querySelector('#dataSeason').textContent=d.data_season_label;
+      dataSeasonRow.classList.remove('d-none');
+    }else{
+      dataSeasonRow.classList.add('d-none');
+    }
+    if(d.target_season_label){
+      document.querySelector('#targetSeason').textContent=d.target_season_label;
+      targetSeasonRow.classList.remove('d-none');
+    }else{
+      targetSeasonRow.classList.add('d-none');
+    }
     document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
     const value=document.querySelector('#value');
     const rec=document.querySelector('#rec');
