@@ -1,10 +1,19 @@
 import { json } from './lib/http.mjs';
 import { predictMatch } from './lib/predictor.mjs';
+import { savePredictionSnapshot } from './lib/tracker.mjs';
 export default async request => {
   if (request.method !== 'POST') return json({ error: 'Použij POST.' }, 405);
   try {
     const body = await request.json();
-    return json(await predictMatch(body.sport, body.team_a, body.team_b, body.odds || null, body.fixture || null));
+    const result = await predictMatch(body.sport, body.team_a, body.team_b, body.odds || null, body.fixture || null);
+    let tracker;
+    try {
+      tracker = await savePredictionSnapshot(result, body.fixture || null);
+    } catch (trackerError) {
+      console.warn('Prediction Tracker save failed:', trackerError.message);
+      tracker = { saved: false, reason: 'TRACKER_SAVE_FAILED' };
+    }
+    return json({ ...result, tracker });
   } catch (error) {
     if (error instanceof SyntaxError) return json({ error: 'Neplatný JSON.' }, 400);
     return json({
