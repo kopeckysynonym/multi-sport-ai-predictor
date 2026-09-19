@@ -8,6 +8,7 @@ import {
   loadApiFootballCzOdds,
   loadLiveFootballTeamData,
   loadNbaTeamStats,
+  loadNhlTeamStats,
   normName,
   summarizeEventMarkets
 } from './providers.mjs';
@@ -459,58 +460,142 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
 }
 
 export async function predictNhl(aName, bName, supplied = null, selectedFixture = null) {
-  const defaults = { attack: 3.05, defense: 3.05, goalie: 1, powerplay: 1, home_adv: 0.12 };
-  const hasTeamData = Boolean(DEMO_DATA.nhl[aName] && DEMO_DATA.nhl[bName]);
-  const a = DEMO_DATA.nhl[aName] || defaults;
-  const b = DEMO_DATA.nhl[bName] || defaults;
+  const targetDate = selectedFixture?.commence_time || new Date().toISOString();
+  const [a, b] = await Promise.all([
+    loadNhlTeamStats(aName, targetDate),
+    loadNhlTeamStats(bName, targetDate)
+  ]);
 
-  const homeLambda = clamp(a.attack * b.defense / 3 * a.powerplay / b.goalie + a.home_adv, 1.2, 5.5);
-  const awayLambda = clamp(b.attack * a.defense / 3 * b.powerplay / a.goalie, 1.1, 5.2);
-  const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 10);
+  const baseHome = (a.goals_for + b.goals_against) / 2;
+  const baseAway = (b.goals_for + a.goals_against) / 2;
+
+  const homeShots = Number.isFinite(a.shots_for) && Number.isFinite(b.shots_against)
+    ? (a.shots_for + b.shots_against) / 2
+    : null;
+  const awayShots = Number.isFinite(b.shots_for) && Number.isFinite(a.shots_against)
+    ? (b.shots_for + a.shots_against) / 2
+    : null;
+
+  const awayGoalieAllowed = Number.isFinite(b.goalie_save_pct)
+    ? Math.max(0.04, 1 - b.goalie_save_pct / 100)
+    : null;
+  const homeGoalieAllowed = Number.isFinite(a.goalie_save_pct)
+    ? Math.max(0.04, 1 - a.goalie_save_pct / 100)
+    : null;
+
+  const shotModelHome = Number.isFinite(homeShots) && Number.isFinite(awayGoalieAllowed)
+    ? homeShots * awayGoalieAllowed
+    : null;
+  const shotModelAway = Number.isFinite(awayShots) && Number.isFinite(homeGoalieAllowed)
+    ? awayShots * homeGoalieAllowed
+    : null;
+
+  const homeFormEstimate = Number.isFinite(a.home_form?.gfpg) && Number.isFinite(b.away_form?.gapg)
+    ? (a.home_form.gfpg + b.away_form.gapg) / 2
+    : null;
+  const awayFormEstimate = Number.isFinite(b.away_form?.gfpg) && Number.isFinite(a.home_form?.gapg)
+    ? (b.away_form.gfpg + a.home_form.gapg) / 2
+    : null;
+
+  let homeLambda = baseHome;
+  let awayLambda = baseAway;
+  if (Number.isFinite(shotModelHome)) homeLambda = 0.72 * homeLambda + 0.28 * shotModelHome;
+  if (Number.isFinite(shotModelAway)) awayLambda = 0.72 * awayLambda + 0.28 * shotModelAway;
+  if (Number.isFinite(homeFormEstimate)) homeLambda = 0.82 * homeLambda + 0.18 * homeFormEstimate;
+  if (Number.isFinite(awayFormEstimate)) awayLambda = 0.82 * awayLambda + 0.18 * awayFormEstimate;
+
+  homeLambda = clamp(homeLambda + 0.12, 1.2, 5.5);
+  awayLambda = clamp(awayLambda, 1.1, 5.2);
+
+  const [pHomeReg, pDrawReg, pAwayReg, score] = scoreMatrix(homeLambda, awayLambda, 10);
+  const pHomeMoneyline = pHomeReg + 0.5 * pDrawReg;
+  const pAwayMoneyline = pAwayReg + 0.5 * pDrawReg;
 
   const liveResult = supplied
     ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: selectedFixture }
     : await loadLiveOdds('nhl', aName, bName, selectedFixture);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nhl;
-  const actionable = Boolean(supplied || live) && hasTeamData;
+  const actionable = Boolean(supplied || live);
 
-  const market = normalizedImpliedProbabilities({
-    home: Number(used.home || 0),
-    draw: Number(used.draw || 0),
-    away: Number(used.away || 0),
-  });
-  const probs = { home: pHome, draw: pDraw, away: pAway };
+  const hasThreeWayOdds = Number(used.draw) > 1;
+  const market = hasThreeWayOdds
+    ? normalizedImpliedProbabilities({
+        home: Number(used.home || 0),
+        draw: Number(used.draw || 0),
+        away: Number(used.away || 0),
+      })
+    : normalizedImpliedProbabilities({
+        home: Number(used.home || 0),
+        away: Number(used.away || 0),
+      });
+
+  const probsForValue = hasThreeWayOdds
+    ? { home: pHomeReg, draw: pDrawReg, away: pAwayReg }
+    : { home: pHomeMoneyline, away: pAwayMoneyline };
+
   const values = Object.fromEntries(
-    Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)])
+    Object.entries(probsForValue).map(([key, probability]) => [
+      key,
+      valueBet(probability, market[key] ?? probability)
+    ])
   );
   const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
-  const limitedReliability = !hasTeamData;
+
+  const rangeTimes = [
+    a?.range?.from,a?.range?.to,b?.range?.from,b?.range?.to
+  ].filter(Boolean)
+    .map(value=>({value,time:Date.parse(value)}))
+    .filter(item=>Number.isFinite(item.time))
+    .sort((x,y)=>x.time-y.time);
+  const historicalMatchRange = rangeTimes.length ? {
+    from: rangeTimes[0].value,
+    to: rangeTimes[rangeTimes.length - 1].value
+  } : null;
+
+  const incompleteCurrentSeasonSample = a.matches_used < 10 || b.matches_used < 10;
+  const limitedReliability = incompleteCurrentSeasonSample;
+  const commonSeasonLabel = a.season_label === b.season_label
+    ? a.season_label
+    : [a.season_label,b.season_label].filter(Boolean).join(' / ');
 
   return {
     sport: 'nhl',
     sport_label: SPORT_LABELS.nhl,
-    model: hasTeamData ? 'Poisson goals + goalie/powerplay model' : 'League-average Poisson fallback',
+    model: 'Current-season up-to-10 Poisson + shots + goalie save% + home/away form',
     team_a: aName,
     team_b: bName,
     selected_fixture: selectedFixture,
     expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
     most_likely_score: { home: score[0], away: score[1] },
-    probabilities: Object.fromEntries(
-      Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
-    ),
+    probabilities: {
+      home: round(pHomeReg * 100, 1),
+      draw: round(pDrawReg * 100, 1),
+      away: round(pAwayReg * 100, 1),
+      home_moneyline: round(pHomeMoneyline * 100, 1),
+      away_moneyline: round(pAwayMoneyline * 100, 1),
+    },
     ...bettingFields({ values, best, used, actionable, limitedReliability }),
-    data_mode: hasTeamData ? 'demo-synthetic-team' : 'demo-synthetic-league-average',
+    data_mode: 'nhl-current-season-last10',
+    data_season_label: commonSeasonLabel || null,
+    current_season_only: true,
+    current_season_sample_complete: !incompleteCurrentSeasonSample,
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
     match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
+    historical_match_range: historicalMatchRange,
     limited_reliability: limitedReliability,
-    reliability_label: hasTeamData ? 'STANDARDNÍ DEMO MODEL' : 'OMEZENÁ SPOLEHLIVOST',
-    data_diagnostics: hasTeamData ? [] : [{
-      team: `${aName} / ${bName}`,
-      code: 'LEAGUE_AVERAGE_FALLBACK',
-      message: 'Pro tuto dvojici zatím nejsou v modelu týmové statistiky; používá se ligový průměr.'
-    }],
+    reliability_label: limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
+    data_matches_used: {
+      team_a: a.matches_used,
+      team_b: b.matches_used,
+    },
+    nhl_team_stats: {
+      team_a: a,
+      team_b: b
+    },
+    data_source_note: 'Pouze aktuální NHL sezona; maximálně 10 posledních dokončených zápasů. Starší sezony jsou vyřazené. Model používá góly, střely na branku, recentní save% brankářů a domácí/venkovní formu z veřejného NHL API.',
+    data_diagnostics: [],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
 }
