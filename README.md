@@ -248,3 +248,6 @@ Duplicate handling:
 The Microsoft Entra app registration used by the function must have Microsoft Graph permission to write to the target SharePoint site/list. Prefer granting the narrowest site-scoped permission that fits the deployment.
 
 The function validates required prediction fields, validates pre-match timestamps, and requires market fields whenever `OddsAvailable=true`. Unknown input fields are ignored rather than forwarded to Microsoft Graph.
+
+
+> After changing production environment variables used by Functions, trigger a new production deploy before validating the runtime configuration.
