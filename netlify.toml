@@ -29,3 +29,9 @@
   from = "/api/predict"
   to = "/.netlify/functions/predict"
   status = 200
+
+
+[[redirects]]
+  from = "/api/upcoming"
+  to = "/.netlify/functions/upcoming"
+  status = 200
