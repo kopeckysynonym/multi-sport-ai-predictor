@@ -29,6 +29,7 @@
           <option value="fifa">FIFA / UEFA</option>
           <option value="nba">NBA</option>
           <option value="nhl">NHL</option>
+          <option value="tennis">Tenis ATP / WTA</option>
         </select>
       </div>
 
@@ -118,6 +119,24 @@
         </table>
       </div>
       <p id="nhlSourceNote" class="muted small mb-0"></p>
+    </div>
+
+    <div id="tennisStatsSection" class="mt-4 d-none">
+      <h5>Tenis – rolling 12 měsíců</h5>
+      <p class="mb-2">Povrch: <strong id="tennisSurface">–</strong> · Okruh: <strong id="tennisTour">–</strong></p>
+      <div class="table-responsive">
+        <table class="table table-dark table-sm align-middle mb-2">
+          <thead>
+            <tr>
+              <th>Metrika</th>
+              <th id="tennisPlayerAHeader">Hráč A</th>
+              <th id="tennisPlayerBHeader">Hráč B</th>
+            </tr>
+          </thead>
+          <tbody id="tennisStatsBody"></tbody>
+        </table>
+      </div>
+      <p id="tennisSourceNote" class="muted small mb-0"></p>
     </div>
 
     <p class="muted mt-3 mb-0" id="modes"></p>
@@ -225,7 +244,11 @@ function metricValue(value,suffix=''){
   return Number.isFinite(Number(value)) ? Number(value).toFixed(1)+suffix : '–';
 }
 
-function probabilityLabel(key){
+function probabilityLabel(key,d=null){
+  if(d?.sport==='tennis'){
+    if(key==='home')return d.team_a;
+    if(key==='away')return d.team_b;
+  }
   const labels={
     home:'Domácí',
     draw:'Remíza',
@@ -253,12 +276,17 @@ function renderFixtureMeta(){
 
   const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
 
-  const seasonGated=['fifa','nba','nhl'].includes(sport.value);
+  const seasonGated=['fifa','nba','nhl','tennis'].includes(sport.value);
   if(seasonGated&&event.analysis_available===false){
-    const h=event.current_season_games?.home;
-    const a=event.current_season_games?.away;
+    const countSource=sport.value==='tennis'
+      ? event.current_form_matches
+      : event.current_season_games;
+    const h=countSource?.home;
+    const a=countSource?.away;
     const counts=Number.isFinite(Number(h))&&Number.isFinite(Number(a))
-      ? `domácí ${h} / hosté ${a} dokončených zápasů`
+      ? (sport.value==='tennis'
+          ? `hráč A ${h} / hráč B ${a} zápasů za 12 měsíců`
+          : `domácí ${h} / hosté ${a} dokončených zápasů`)
       : 'počet zápasů se nepodařilo ověřit';
     parts.push(`NEDOSTATEK DAT · ${counts}`);
     go.disabled=true;
@@ -299,7 +327,7 @@ async function loadUpcoming(){
     fixture.innerHTML=events.map((event,index)=>{
       const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
       const league=event.league?' · '+event.league:'';
-      const seasonGated=['fifa','nba','nhl'].includes(sport.value);
+      const seasonGated=['fifa','nba','nhl','tennis'].includes(sport.value);
       const availability=seasonGated&&event.analysis_available===false
         ? ' · NEDOSTATEK DAT'
         : seasonGated&&event.data_status
@@ -380,7 +408,14 @@ function renderResult(d,event){
     reliabilityRow.classList.add('d-none');
   }
 
-  document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
+  const scoreEl=document.querySelector('#score');
+  if(d.sport==='tennis'){
+    scoreEl.textContent=d.predicted_winner
+      ? d.predicted_winner+' ('+d.predicted_winner_probability+' %)'
+      : '–';
+  }else{
+    scoreEl.textContent=d.expected_score?.home+' : '+d.expected_score?.away;
+  }
 
   const value=document.querySelector('#value');
   const rec=document.querySelector('#rec');
@@ -411,7 +446,7 @@ function renderResult(d,event){
     ? '<span class="prob-note">Modelová pravděpodobnost – vychází ze starších nebo omezených dat</span>'
     : '';
   document.querySelector('#probs').innerHTML=Object.entries(d.probabilities)
-    .map(([k,v])=>`<div class="mb-1">${probabilityLabel(k)}: <strong>${v}%</strong> ${probabilityNote}</div>`)
+    .map(([k,v])=>`<div class="mb-1">${probabilityLabel(k,d)}: <strong>${v}%</strong> ${probabilityNote}</div>`)
     .join('');
 
   const nbaSection=document.querySelector('#nbaStatsSection');
@@ -495,6 +530,32 @@ function renderResult(d,event){
     nhlSection.classList.add('d-none');
   }
 
+  const tennisSection=document.querySelector('#tennisStatsSection');
+  if(d.sport==='tennis'&&d.tennis_player_stats?.player_a&&d.tennis_player_stats?.player_b){
+    const aStats=d.tennis_player_stats.player_a;
+    const bStats=d.tennis_player_stats.player_b;
+    document.querySelector('#tennisPlayerAHeader').textContent=d.team_a;
+    document.querySelector('#tennisPlayerBHeader').textContent=d.team_b;
+    document.querySelector('#tennisSurface').textContent=d.surface||'–';
+    document.querySelector('#tennisTour').textContent=d.tennis_tour||'–';
+
+    const rows=[
+      ['Zápasy za 12 měsíců',aStats.matches_12m,bStats.matches_12m],
+      ['Elo',metricValue(aStats.elo),metricValue(bStats.elo)],
+      ['Elo na povrchu',metricValue(aStats.surface_elo),metricValue(bStats.surface_elo)],
+      ['Forma – posledních 10',aStats.recent_wins+'-'+(aStats.recent_matches-aStats.recent_wins)+' · '+metricValue(aStats.recent_win_pct,'%'),bStats.recent_wins+'-'+(bStats.recent_matches-bStats.recent_wins)+' · '+metricValue(bStats.recent_win_pct,'%')],
+      ['Zápasy na povrchu',aStats.surface_matches,bStats.surface_matches],
+      ['Forma na povrchu',metricValue(aStats.surface_win_pct,'%'),metricValue(bStats.surface_win_pct,'%')]
+    ];
+    document.querySelector('#tennisStatsBody').innerHTML=rows
+      .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
+      .join('');
+    document.querySelector('#tennisSourceNote').textContent=d.data_source_note||'';
+    tennisSection.classList.remove('d-none');
+  }else{
+    tennisSection.classList.add('d-none');
+  }
+
   document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
   if(d.tracker?.saved){
     trackerStatus.textContent='Prediction Tracker: predikce byla uložena před zápasem.';
@@ -512,7 +573,7 @@ function renderResult(d,event){
 async function predict(){
   const event=selectedEvent();
   if(!event)return;
-  if(['fifa','nba','nhl'].includes(sport.value)&&event.analysis_available===false){
+  if(['fifa','nba','nhl','tennis'].includes(sport.value)&&event.analysis_available===false){
     renderFixtureMeta();
     return;
   }
@@ -537,13 +598,14 @@ async function predict(){
     const d=await r.json();
     if(!r.ok)throw Error(d.error||'Predikce selhala.');
     renderResult(d,event);
+    if(d.tracker?.saved)loadTrackerHistory();
   }catch(e){
     err.textContent=e.message;
     err.classList.remove('d-none');
   }finally{
     go.textContent='Analyzovat zápas';
     const current=selectedEvent();
-    go.disabled=Boolean(['fifa','nba','nhl'].includes(sport.value)&&current?.analysis_available===false);
+    go.disabled=Boolean(['fifa','nba','nhl','tennis'].includes(sport.value)&&current?.analysis_available===false);
   }
 }
 
