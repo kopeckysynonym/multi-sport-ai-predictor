@@ -265,10 +265,11 @@ export function calculateTennisModelFromMatches(matches, playerA, playerB, surfa
     70 * (aSurfaceForm - bSurfaceForm);
 
   const probabilityA = 1 / (1 + 10 ** (-ratingDiff / 400));
-  const latestTime = Math.max(
+  const latestTimes = [
     Date.parse(aRows[0]?.date || 0) || 0,
     Date.parse(bRows[0]?.date || 0) || 0
-  );
+  ].filter(Boolean);
+  const latestTime = latestTimes.length ? Math.min(...latestTimes) : 0;
 
   return {
     surface: selectedSurface,
