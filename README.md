@@ -99,3 +99,17 @@ For NBA predictions, historical games are restricted to the season containing th
 - Requires at least 3 completed current-season games to produce the NBA model.
 - If fewer than 10 current-season games are available, the prediction remains marked as limited reliability and no betting recommendation is issued.
 - Previous-season games are excluded completely once the selected fixture belongs to the new season.
+
+
+## Current-season-only NHL rule
+
+NHL predictions now follow the same season-safety rules as NBA and never pull games from the previous season to fill the sample.
+
+- Uses up to the latest 10 completed games from the current NHL season only.
+- Requires at least 3 completed current-season games for both teams.
+- 0-2 games for either team: the fixture is marked `NEDOSTATEK DAT` and analysis is disabled.
+- 3-9 games: analysis is allowed but marked `OMEZENÁ SPOLEHLIVOST`; Value Bet is informational only and no `SÁZET` recommendation is issued.
+- 10+ games: the model uses the latest 10 current-season games.
+- Previous-season games are excluded completely.
+
+The live NHL model uses the public NHL API for goals for/against, shots on goal, recent goalie save percentage from box scores, and home/away form. The Odds API remains the live odds source.
