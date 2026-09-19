@@ -1,8 +1,229 @@
-import{DEMO_DATA,DEMO_ODDS,SPORT_LABELS}from'./data.mjs';import{clamp,normalCdf,normalizedImpliedProbabilities,recommendation,round,scoreMatrix,valueBet}from'./math.mjs';import{findMatchOdds,getOddsTeamName,liveDataEnabled,loadLiveFootballTeamData,normName}from'./providers.mjs';
-async function loadTeamData(sport,team){const fallback=DEMO_DATA?.[sport]?.[team];if(!fallback)throw new TypeError(`Tým '${team}' není podporován pro sport '${sport}'.`);if(liveDataEnabled()&&['cz_football','fifa'].includes(sport)&&process.env.API_FOOTBALL_KEY)try{return{data:await loadLiveFootballTeamData(sport,team,fallback),mode:'api-football-live'};}catch(e){console.warn(`API-Football fallback for ${team}:`,e.message);}return{data:fallback,mode:'demo-synthetic'};}
-function oddsFromLookup(l,sport,a){const out={},eh=l?.matched_event?.home_team||'',ea=l?.matched_event?.away_team||'',appHomeIsA=normName(eh)===normName(getOddsTeamName(sport,a));for(const i of l?.markets?.moneyline||[]){if(String(i.name).toLowerCase()==='draw')out.draw=Number(i.average_price);else if(normName(i.name)===normName(eh))out[appHomeIsA?'home':'away']=Number(i.average_price);else if(normName(i.name)===normName(ea))out[appHomeIsA?'away':'home']=Number(i.average_price);}const hs=(l?.markets?.spreads||[]).filter(i=>normName(i.name)===normName(eh));if(hs.length){out.spread_home=appHomeIsA?Number(hs[0].point):-Number(hs[0].point);out.spread_home_price=Number(hs[0].average_price);}return out;}
-async function loadLiveOdds(sport,a,b){if(!liveDataEnabled()||!process.env.ODDS_API_KEY)return null;try{const l=await findMatchOdds({sport,teamA:a,teamB:b,markets:sport==='nba'?'h2h,spreads':'h2h'}),o=oddsFromLookup(l,sport,a);return Object.keys(o).length?o:null;}catch(e){console.warn('The Odds API fallback:',e.message);return null;}}
-export async function predictFootball(sport,aName,bName,supplied=null){const al=await loadTeamData(sport,aName),bl=await loadTeamData(sport,bName),a=al.data,b=bl.data,hl=clamp(a.attack*b.defense*.56+(a.home_adv||.12),.25,4.5),aw=clamp(b.attack*a.defense*.52,.2,4),[ph,pd,pa,score]=scoreMatrix(hl,aw,9),live=supplied?null:await loadLiveOdds(sport,aName,bName),used=supplied||live||DEMO_ODDS.football,market=normalizedImpliedProbabilities({home:Number(used.home||0),draw:Number(used.draw||0),away:Number(used.away||0)}),probs={home:ph,draw:pd,away:pa},values=Object.fromEntries(Object.entries(probs).map(([k,p])=>[k,valueBet(p,market[k]??p)])),best=Object.entries(values).sort((x,y)=>y[1]-x[1])[0];return{sport,sport_label:SPORT_LABELS[sport],model:'Poisson goals model',team_a:aName,team_b:bName,expected_score:{home:round(hl,2),away:round(aw,2)},most_likely_score:{home:score[0],away:score[1]},probabilities:Object.fromEntries(Object.entries(probs).map(([k,p])=>[k,round(p*100,1)])),market_odds:used,value_bets:Object.fromEntries(Object.entries(values).map(([k,v])=>[k,round(v,1)])),best_value_market:best[0],best_value_pct:round(best[1],1),recommendation:recommendation(best[1]),data_mode:al.mode==='api-football-live'&&bl.mode==='api-football-live'?'api-football-live':'demo-synthetic',odds_mode:live?'the-odds-api-live':supplied?'client-supplied':'demo'};}
-export async function predictNba(aName,bName,supplied=null){const a=DEMO_DATA.nba[aName],b=DEMO_DATA.nba[bName];if(!a||!b)throw new TypeError('Nepodporovaný NBA tým.');const pace=((a.pace+b.pace)/2)/100,home=clamp(((a.offense+b.defense)/2)*pace*a.injury_factor+2.4,85,140),away=clamp(((b.offense+a.defense)/2)*pace*b.injury_factor,85,140),margin=home-away,ph=1-normalCdf(0,margin,12),pa=1-ph,live=supplied?null:await loadLiveOdds('nba',aName,bName),used=supplied||live||DEMO_ODDS.nba,market=normalizedImpliedProbabilities({home:Number(used.home||0),away:Number(used.away||0)}),spread=Number.isFinite(Number(used.spread_home))?Number(used.spread_home):-3.5,phc=1-normalCdf(-spread,margin,12),probs={home_moneyline:ph,away_moneyline:pa,home_cover:phc,away_cover:1-phc},values={home_moneyline:valueBet(ph,market.home??ph),away_moneyline:valueBet(pa,market.away??pa)},best=Object.entries(values).sort((x,y)=>y[1]-x[1])[0];return{sport:'nba',sport_label:SPORT_LABELS.nba,model:'Expected-score + normal margin model',team_a:aName,team_b:bName,expected_score:{home:round(home,1),away:round(away,1)},expected_margin:round(margin,1),spread_home:spread,probabilities:Object.fromEntries(Object.entries(probs).map(([k,p])=>[k,round(p*100,1)])),market_odds:used,value_bets:Object.fromEntries(Object.entries(values).map(([k,v])=>[k,round(v,1)])),best_value_market:best[0],best_value_pct:round(best[1],1),recommendation:recommendation(best[1]),data_mode:'demo-synthetic',odds_mode:live?'the-odds-api-live':supplied?'client-supplied':'demo'};}
-export async function predictNhl(aName,bName,supplied=null){const a=DEMO_DATA.nhl[aName],b=DEMO_DATA.nhl[bName];if(!a||!b)throw new TypeError('Nepodporovaný NHL tým.');const hl=clamp(a.attack*b.defense/3*a.powerplay/b.goalie+a.home_adv,1.2,5.5),aw=clamp(b.attack*a.defense/3*b.powerplay/a.goalie,1.1,5.2),[ph,pd,pa,score]=scoreMatrix(hl,aw,10),live=supplied?null:await loadLiveOdds('nhl',aName,bName),used=supplied||live||DEMO_ODDS.nhl,market=normalizedImpliedProbabilities({home:Number(used.home||0),draw:Number(used.draw||0),away:Number(used.away||0)}),probs={home:ph,draw:pd,away:pa},values=Object.fromEntries(Object.entries(probs).map(([k,p])=>[k,valueBet(p,market[k]??p)])),best=Object.entries(values).sort((x,y)=>y[1]-x[1])[0];return{sport:'nhl',sport_label:SPORT_LABELS.nhl,model:'Poisson goals + goalie/powerplay model',team_a:aName,team_b:bName,expected_score:{home:round(hl,2),away:round(aw,2)},most_likely_score:{home:score[0],away:score[1]},probabilities:Object.fromEntries(Object.entries(probs).map(([k,p])=>[k,round(p*100,1)])),market_odds:used,value_bets:Object.fromEntries(Object.entries(values).map(([k,v])=>[k,round(v,1)])),best_value_market:best[0],best_value_pct:round(best[1],1),recommendation:recommendation(best[1]),data_mode:'demo-synthetic',odds_mode:live?'the-odds-api-live':supplied?'client-supplied':'demo'};}
-export async function predictMatch(sport,a,b,odds=null){if(!sport||!a||!b)throw new TypeError('Chybí sport nebo tým.');if(a===b)throw new TypeError('Vyber dva různé týmy.');if(['cz_football','fifa'].includes(sport))return predictFootball(sport,a,b,odds);if(sport==='nba')return predictNba(a,b,odds);if(sport==='nhl')return predictNhl(a,b,odds);throw new TypeError('Nepodporovaný sport.');}
+import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
+import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
+import { findMatchOdds, getOddsTeamName, liveDataEnabled, loadLiveFootballTeamData, normName } from './providers.mjs';
+
+function diagnostic(error) {
+  if (!error) return null;
+  return {
+    code: error.code || 'UPSTREAM_ERROR',
+    message: error.message || 'Live zdroj není dostupný.',
+    provider_status: error.providerStatus ?? null,
+  };
+}
+
+async function loadTeamData(sport, team) {
+  const fallback = DEMO_DATA?.[sport]?.[team];
+  if (!fallback) throw new TypeError(`Tým '${team}' není podporován pro sport '${sport}'.`);
+
+  if (!liveDataEnabled()) {
+    return { data: fallback, mode: 'demo-synthetic', diagnostic: { code: 'LIVE_DISABLED', message: 'Live data jsou vypnutá.' } };
+  }
+
+  if (['cz_football', 'fifa'].includes(sport)) {
+    if (!process.env.API_FOOTBALL_KEY) {
+      return { data: fallback, mode: 'demo-synthetic', diagnostic: { code: 'MISSING_KEY', message: 'Chybí API_FOOTBALL_KEY.' } };
+    }
+    try {
+      return {
+        data: await loadLiveFootballTeamData(sport, team, fallback),
+        mode: 'api-football-live',
+        diagnostic: null,
+      };
+    } catch (error) {
+      console.warn(`API-Football fallback for ${team}:`, error.message);
+      return { data: fallback, mode: 'demo-synthetic', diagnostic: diagnostic(error) };
+    }
+  }
+
+  return { data: fallback, mode: 'demo-synthetic', diagnostic: null };
+}
+
+function oddsFromLookup(lookup, sport, teamA) {
+  const out = {};
+  const eventHome = lookup?.matched_event?.home_team || '';
+  const eventAway = lookup?.matched_event?.away_team || '';
+  const appHomeIsA = normName(eventHome) === normName(getOddsTeamName(sport, teamA));
+
+  for (const item of lookup?.markets?.moneyline || []) {
+    if (String(item.name).toLowerCase() === 'draw') out.draw = Number(item.average_price);
+    else if (normName(item.name) === normName(eventHome)) out[appHomeIsA ? 'home' : 'away'] = Number(item.average_price);
+    else if (normName(item.name) === normName(eventAway)) out[appHomeIsA ? 'away' : 'home'] = Number(item.average_price);
+  }
+
+  const homeSpreads = (lookup?.markets?.spreads || []).filter(item => normName(item.name) === normName(eventHome));
+  if (homeSpreads.length) {
+    out.spread_home = appHomeIsA ? Number(homeSpreads[0].point) : -Number(homeSpreads[0].point);
+    out.spread_home_price = Number(homeSpreads[0].average_price);
+  }
+  return out;
+}
+
+async function loadLiveOdds(sport, teamA, teamB) {
+  if (!liveDataEnabled()) {
+    return { odds: null, diagnostic: { code: 'LIVE_DISABLED', message: 'Live kurzy jsou vypnuté.' } };
+  }
+  if (!process.env.ODDS_API_KEY) {
+    return { odds: null, diagnostic: { code: 'MISSING_KEY', message: 'Chybí ODDS_API_KEY.' } };
+  }
+
+  try {
+    const lookup = await findMatchOdds({
+      sport,
+      teamA,
+      teamB,
+      markets: sport === 'nba' ? 'h2h,spreads' : 'h2h',
+    });
+    const odds = oddsFromLookup(lookup, sport, teamA);
+    return Object.keys(odds).length
+      ? { odds, diagnostic: null }
+      : { odds: null, diagnostic: { code: 'EMPTY_MARKET', message: 'Pro nalezený zápas nejsou dostupné požadované kurzy.' } };
+  } catch (error) {
+    console.warn('The Odds API fallback:', error.message);
+    return { odds: null, diagnostic: diagnostic(error) };
+  }
+}
+
+export async function predictFootball(sport, aName, bName, supplied = null) {
+  const [al, bl] = await Promise.all([loadTeamData(sport, aName), loadTeamData(sport, bName)]);
+  const a = al.data;
+  const b = bl.data;
+
+  const homeLambda = clamp(a.attack * b.defense * 0.56 + (a.home_adv || 0.12), 0.25, 4.5);
+  const awayLambda = clamp(b.attack * a.defense * 0.52, 0.2, 4);
+  const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 9);
+
+  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds(sport, aName, bName);
+  const live = liveResult.odds;
+  const used = supplied || live || DEMO_ODDS.football;
+  const market = normalizedImpliedProbabilities({
+    home: Number(used.home || 0),
+    draw: Number(used.draw || 0),
+    away: Number(used.away || 0),
+  });
+  const probs = { home: pHome, draw: pDraw, away: pAway };
+  const values = Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)]));
+  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+
+  const dataDiagnostics = [
+    al.diagnostic ? { team: aName, ...al.diagnostic } : null,
+    bl.diagnostic ? { team: bName, ...bl.diagnostic } : null,
+  ].filter(Boolean);
+
+  return {
+    sport,
+    sport_label: SPORT_LABELS[sport],
+    model: 'Poisson goals model',
+    team_a: aName,
+    team_b: bName,
+    expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
+    most_likely_score: { home: score[0], away: score[1] },
+    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    market_odds: used,
+    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
+    best_value_market: best[0],
+    best_value_pct: round(best[1], 1),
+    recommendation: recommendation(best[1]),
+    data_mode: al.mode === 'api-football-live' && bl.mode === 'api-football-live' ? 'api-football-live' : 'demo-synthetic',
+    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    data_diagnostics: dataDiagnostics,
+    odds_diagnostic: supplied ? null : liveResult.diagnostic,
+  };
+}
+
+export async function predictNba(aName, bName, supplied = null) {
+  const a = DEMO_DATA.nba[aName];
+  const b = DEMO_DATA.nba[bName];
+  if (!a || !b) throw new TypeError('Nepodporovaný NBA tým.');
+
+  const pace = ((a.pace + b.pace) / 2) / 100;
+  const home = clamp(((a.offense + b.defense) / 2) * pace * a.injury_factor + 2.4, 85, 140);
+  const away = clamp(((b.offense + a.defense) / 2) * pace * b.injury_factor, 85, 140);
+  const margin = home - away;
+  const pHome = 1 - normalCdf(0, margin, 12);
+  const pAway = 1 - pHome;
+
+  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds('nba', aName, bName);
+  const live = liveResult.odds;
+  const used = supplied || live || DEMO_ODDS.nba;
+  const market = normalizedImpliedProbabilities({ home: Number(used.home || 0), away: Number(used.away || 0) });
+  const spread = Number.isFinite(Number(used.spread_home)) ? Number(used.spread_home) : -3.5;
+  const pHomeCover = 1 - normalCdf(-spread, margin, 12);
+  const probs = { home_moneyline: pHome, away_moneyline: pAway, home_cover: pHomeCover, away_cover: 1 - pHomeCover };
+  const values = {
+    home_moneyline: valueBet(pHome, market.home ?? pHome),
+    away_moneyline: valueBet(pAway, market.away ?? pAway),
+  };
+  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+
+  return {
+    sport: 'nba',
+    sport_label: SPORT_LABELS.nba,
+    model: 'Expected-score + normal margin model',
+    team_a: aName,
+    team_b: bName,
+    expected_score: { home: round(home, 1), away: round(away, 1) },
+    expected_margin: round(margin, 1),
+    spread_home: spread,
+    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    market_odds: used,
+    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
+    best_value_market: best[0],
+    best_value_pct: round(best[1], 1),
+    recommendation: recommendation(best[1]),
+    data_mode: 'demo-synthetic',
+    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    data_diagnostics: [],
+    odds_diagnostic: supplied ? null : liveResult.diagnostic,
+  };
+}
+
+export async function predictNhl(aName, bName, supplied = null) {
+  const a = DEMO_DATA.nhl[aName];
+  const b = DEMO_DATA.nhl[bName];
+  if (!a || !b) throw new TypeError('Nepodporovaný NHL tým.');
+
+  const homeLambda = clamp(a.attack * b.defense / 3 * a.powerplay / b.goalie + a.home_adv, 1.2, 5.5);
+  const awayLambda = clamp(b.attack * a.defense / 3 * b.powerplay / a.goalie, 1.1, 5.2);
+  const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 10);
+
+  const liveResult = supplied ? { odds: null, diagnostic: null } : await loadLiveOdds('nhl', aName, bName);
+  const live = liveResult.odds;
+  const used = supplied || live || DEMO_ODDS.nhl;
+  const market = normalizedImpliedProbabilities({
+    home: Number(used.home || 0),
+    draw: Number(used.draw || 0),
+    away: Number(used.away || 0),
+  });
+  const probs = { home: pHome, draw: pDraw, away: pAway };
+  const values = Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)]));
+  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+
+  return {
+    sport: 'nhl',
+    sport_label: SPORT_LABELS.nhl,
+    model: 'Poisson goals + goalie/powerplay model',
+    team_a: aName,
+    team_b: bName,
+    expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
+    most_likely_score: { home: score[0], away: score[1] },
+    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    market_odds: used,
+    value_bets: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)])),
+    best_value_market: best[0],
+    best_value_pct: round(best[1], 1),
+    recommendation: recommendation(best[1]),
+    data_mode: 'demo-synthetic',
+    odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
+    data_diagnostics: [],
+    odds_diagnostic: supplied ? null : liveResult.diagnostic,
+  };
+}
+
+export async function predictMatch(sport, a, b, odds = null) {
+  if (!sport || !a || !b) throw new TypeError('Chybí sport nebo tým.');
+  if (a === b) throw new TypeError('Vyber dva různé týmy.');
+  if (['cz_football', 'fifa'].includes(sport)) return predictFootball(sport, a, b, odds);
+  if (sport === 'nba') return predictNba(a, b, odds);
+  if (sport === 'nhl') return predictNhl(a, b, odds);
+  throw new TypeError('Nepodporovaný sport.');
+}
