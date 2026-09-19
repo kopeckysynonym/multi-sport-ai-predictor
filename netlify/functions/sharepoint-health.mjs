@@ -5,6 +5,19 @@ function env(name) {
   return globalThis.Netlify?.env?.get?.(name) || null;
 }
 
+function tokenRoles(token) {
+  try {
+    const [, payload] = String(token || '').split('.');
+    if (!payload) return [];
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const decoded = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    return Array.isArray(decoded?.roles) ? decoded.roles : [];
+  } catch {
+    return [];
+  }
+}
+
 export default async request => {
   if (request.method !== 'GET') return json({ error: 'Použij GET.' }, 405);
 
@@ -24,6 +37,7 @@ export default async request => {
 
   try {
     const token = await getGraphAccessToken();
+    const roles = tokenRoles(token);
     const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/columns?$select=id,name,displayName,hidden,readOnly`;
     const response = await fetch(url, {
       headers: {
@@ -39,6 +53,8 @@ export default async request => {
         ok: false,
         configured: true,
         token_ok: true,
+        token_roles: roles,
+        has_sites_manage_all: roles.includes('Sites.Manage.All'),
         list_ok: false,
         columns_count: null,
         graph_status: response.status,
@@ -56,6 +72,8 @@ export default async request => {
       ok: true,
       configured: true,
       token_ok: true,
+      token_roles: roles,
+      has_sites_manage_all: roles.includes('Sites.Manage.All'),
       list_ok: true,
       columns_count: columns.length,
       visible_columns: custom,
