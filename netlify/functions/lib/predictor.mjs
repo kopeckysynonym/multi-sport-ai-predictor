@@ -1,12 +1,14 @@
 import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
 import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
 import {
+  fetchEventOdds,
   findMatchOdds,
   getOddsTeamName,
   liveDataEnabled,
   loadApiFootballCzOdds,
   loadLiveFootballTeamData,
-  normName
+  normName,
+  summarizeEventMarkets
 } from './providers.mjs';
 
 function diagnostic(error) {
@@ -57,29 +59,40 @@ function seasonStartFromFixtureDate(sport, dateValue, teamA, teamB) {
   return date.getUTCMonth() + 1 >= 7 ? year : year - 1;
 }
 
-function seasonFromFixtureDate(sport, dateValue, teamA, teamB) {
-  const start = seasonStartFromFixtureDate(sport, dateValue, teamA, teamB);
-  return start == null ? null : formatSeason(sport, start, teamA, teamB);
-}
-
 function currentSeasonStart(sport, teamA, teamB, date = new Date()) {
   const year = date.getUTCFullYear();
   if (isNationalFixture(sport, teamA, teamB)) return year;
   return date.getUTCMonth() + 1 >= 7 ? year : year - 1;
 }
 
+function footballFallback(sport, team) {
+  return DEMO_DATA?.[sport]?.[team] || {
+    attack: sport === 'cz_football' ? 1.45 : 1.55,
+    defense: sport === 'cz_football' ? 1.1 : 1.05,
+    home_adv: sport === 'cz_football' ? 0.16 : 0.1,
+  };
+}
+
 async function loadTeamData(sport, team) {
-  const fallback = DEMO_DATA?.[sport]?.[team];
-  if (!fallback) throw new TypeError(`Tým '${team}' není podporován pro sport '${sport}'.`);
+  const fallback = footballFallback(sport, team);
 
   if (!liveDataEnabled()) {
-    return { data: fallback, mode: 'demo-synthetic', diagnostic: { code: 'LIVE_DISABLED', message: 'Live data jsou vypnutá.' } };
+    return {
+      data: fallback,
+      mode: 'demo-synthetic',
+      diagnostic: { code: 'LIVE_DISABLED', message: 'Live data jsou vypnutá.' }
+    };
   }
 
   if (['cz_football', 'fifa'].includes(sport)) {
     if (!process.env.API_FOOTBALL_KEY) {
-      return { data: fallback, mode: 'demo-synthetic', diagnostic: { code: 'MISSING_KEY', message: 'Chybí API_FOOTBALL_KEY.' } };
+      return {
+        data: fallback,
+        mode: 'demo-synthetic',
+        diagnostic: { code: 'MISSING_KEY', message: 'Chybí API_FOOTBALL_KEY.' }
+      };
     }
+
     try {
       const data = await loadLiveFootballTeamData(sport, team, fallback);
       return {
@@ -116,20 +129,45 @@ function oddsFromLookup(lookup, sport, teamA) {
   return out;
 }
 
-async function loadLiveOdds(sport, teamA, teamB) {
+async function selectedOddsLookup(sport, selectedFixture) {
+  if (!selectedFixture?.event_id || !selectedFixture?.sport_key) return null;
+  const markets = sport === 'nba' ? 'h2h,spreads' : 'h2h';
+  const { data } = await fetchEventOdds(
+    selectedFixture.sport_key,
+    String(selectedFixture.event_id),
+    markets
+  );
+  const summary = summarizeEventMarkets(data);
+  return {
+    matched_event: {
+      id: String(selectedFixture.event_id),
+      home_team: data?.home_team || selectedFixture.home_team,
+      away_team: data?.away_team || selectedFixture.away_team,
+      commence_time: data?.commence_time || selectedFixture.commence_time,
+    },
+    markets: summary.consensus,
+  };
+}
+
+async function loadLiveOdds(sport, teamA, teamB, selectedFixture = null) {
   if (!liveDataEnabled()) {
-    return { odds: null, mode: 'demo', diagnostic: { code: 'LIVE_DISABLED', message: 'Live kurzy jsou vypnuté.' } };
+    return {
+      odds: null,
+      mode: 'demo',
+      diagnostic: { code: 'LIVE_DISABLED', message: 'Live kurzy jsou vypnuté.' },
+      meta: selectedFixture || null,
+    };
   }
 
   if (sport === 'cz_football') {
     try {
-      const result = await loadApiFootballCzOdds(teamA, teamB);
+      const result = await loadApiFootballCzOdds(teamA, teamB, selectedFixture);
       const { home, draw, away, ...meta } = result;
       return {
         odds: { home, draw, away },
         mode: 'api-football-odds',
         diagnostic: null,
-        meta,
+        meta: { ...(selectedFixture || {}), ...meta },
       };
     } catch (error) {
       console.warn('API-Football odds fallback:', error.message);
@@ -137,17 +175,22 @@ async function loadLiveOdds(sport, teamA, teamB) {
         odds: null,
         mode: 'demo',
         diagnostic: diagnostic(error),
-        meta: error?.fixtureMeta || null,
+        meta: { ...(selectedFixture || {}), ...(error?.fixtureMeta || {}) },
       };
     }
   }
 
   if (!process.env.ODDS_API_KEY) {
-    return { odds: null, mode: 'demo', diagnostic: { code: 'MISSING_KEY', message: 'Chybí ODDS_API_KEY.' } };
+    return {
+      odds: null,
+      mode: 'demo',
+      diagnostic: { code: 'MISSING_KEY', message: 'Chybí ODDS_API_KEY.' },
+      meta: selectedFixture || null,
+    };
   }
 
   try {
-    const lookup = await findMatchOdds({
+    const lookup = await selectedOddsLookup(sport, selectedFixture) || await findMatchOdds({
       sport,
       teamA,
       teamB,
@@ -155,15 +198,30 @@ async function loadLiveOdds(sport, teamA, teamB) {
     });
     const odds = oddsFromLookup(lookup, sport, teamA);
     return Object.keys(odds).length
-      ? { odds, mode: 'the-odds-api-live', diagnostic: null, meta: lookup?.matched_event || null }
-      : { odds: null, mode: 'demo', diagnostic: { code: 'EMPTY_MARKET', message: 'Pro nalezený zápas nejsou dostupné požadované kurzy.' } };
+      ? {
+          odds,
+          mode: 'the-odds-api-live',
+          diagnostic: null,
+          meta: { ...(selectedFixture || {}), ...(lookup?.matched_event || {}) }
+        }
+      : {
+          odds: null,
+          mode: 'demo',
+          diagnostic: { code: 'EMPTY_MARKET', message: 'Pro vybraný zápas nejsou dostupné požadované kurzy.' },
+          meta: selectedFixture || lookup?.matched_event || null
+        };
   } catch (error) {
     console.warn('The Odds API fallback:', error.message);
-    return { odds: null, mode: 'demo', diagnostic: diagnostic(error) };
+    return {
+      odds: null,
+      mode: 'demo',
+      diagnostic: diagnostic(error),
+      meta: selectedFixture || null,
+    };
   }
 }
 
-export async function predictFootball(sport, aName, bName, supplied = null) {
+export async function predictFootball(sport, aName, bName, supplied = null, selectedFixture = null) {
   const [al, bl] = await Promise.all([loadTeamData(sport, aName), loadTeamData(sport, bName)]);
   const a = al.data;
   const b = bl.data;
@@ -173,8 +231,8 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 9);
 
   const liveResult = supplied
-    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
-    : await loadLiveOdds(sport, aName, bName);
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: selectedFixture }
+    : await loadLiveOdds(sport, aName, bName, selectedFixture);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.football;
   const actionable = Boolean(supplied || live);
@@ -185,7 +243,9 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     away: Number(used.away || 0),
   });
   const probs = { home: pHome, draw: pDraw, away: pAway };
-  const values = Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)]));
+  const values = Object.fromEntries(
+    Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)])
+  );
   const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
   const dataDiagnostics = [
@@ -200,7 +260,8 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   const dataSeasonLabel = dataSeasons.length
     ? dataSeasons.map(season => formatSeason(sport, season, aName, bName)).filter(Boolean).join(', ')
     : null;
-  const matchDate = liveResult?.meta?.commence_time || null;
+
+  const matchDate = selectedFixture?.commence_time || liveResult?.meta?.commence_time || null;
   const targetSeasonStart = seasonStartFromFixtureDate(sport, matchDate, aName, bName)
     ?? currentSeasonStart(sport, aName, bName);
   const targetSeasonLabel = formatSeason(sport, targetSeasonStart, aName, bName);
@@ -220,9 +281,7 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   } : null;
 
   const latestDataSeason = dataSeasons.length ? Math.max(...dataSeasons) : null;
-  const dataAgeSeasons = latestDataSeason == null
-    ? null
-    : Math.max(0, targetSeasonStart - latestDataSeason);
+  const dataAgeSeasons = latestDataSeason == null ? null : Math.max(0, targetSeasonStart - latestDataSeason);
   const limitedReliability = Number.isFinite(dataAgeSeasons) && dataAgeSeasons > 1;
   const reliabilityLabel = dataAgeSeasons == null
     ? null
@@ -234,9 +293,12 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     model: 'Poisson goals model',
     team_a: aName,
     team_b: bName,
+    selected_fixture: selectedFixture,
     expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
     most_likely_score: { home: score[0], away: score[1] },
-    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    probabilities: Object.fromEntries(
+      Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
+    ),
     ...bettingFields({ values, best, used, actionable }),
     data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-')
       ? (al.mode === bl.mode ? al.mode : 'api-football-mixed')
@@ -261,10 +323,11 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
   };
 }
 
-export async function predictNba(aName, bName, supplied = null) {
-  const a = DEMO_DATA.nba[aName];
-  const b = DEMO_DATA.nba[bName];
-  if (!a || !b) throw new TypeError('Nepodporovaný NBA tým.');
+export async function predictNba(aName, bName, supplied = null, selectedFixture = null) {
+  const defaults = { offense: 115.5, defense: 115.5, pace: 100, injury_factor: 1 };
+  const hasTeamData = Boolean(DEMO_DATA.nba[aName] && DEMO_DATA.nba[bName]);
+  const a = DEMO_DATA.nba[aName] || defaults;
+  const b = DEMO_DATA.nba[bName] || defaults;
 
   const pace = ((a.pace + b.pace) / 2) / 100;
   const home = clamp(((a.offense + b.defense) / 2) * pace * a.injury_factor + 2.4, 85, 140);
@@ -274,16 +337,21 @@ export async function predictNba(aName, bName, supplied = null) {
   const pAway = 1 - pHome;
 
   const liveResult = supplied
-    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
-    : await loadLiveOdds('nba', aName, bName);
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: selectedFixture }
+    : await loadLiveOdds('nba', aName, bName, selectedFixture);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nba;
-  const actionable = Boolean(supplied || live);
+  const actionable = Boolean(supplied || live) && hasTeamData;
 
   const market = normalizedImpliedProbabilities({ home: Number(used.home || 0), away: Number(used.away || 0) });
   const spread = Number.isFinite(Number(used.spread_home)) ? Number(used.spread_home) : -3.5;
   const pHomeCover = 1 - normalCdf(-spread, margin, 12);
-  const probs = { home_moneyline: pHome, away_moneyline: pAway, home_cover: pHomeCover, away_cover: 1 - pHomeCover };
+  const probs = {
+    home_moneyline: pHome,
+    away_moneyline: pAway,
+    home_cover: pHomeCover,
+    away_cover: 1 - pHomeCover
+  };
   const values = {
     home_moneyline: valueBet(pHome, market.home ?? pHome),
     away_moneyline: valueBet(pAway, market.away ?? pAway),
@@ -293,37 +361,48 @@ export async function predictNba(aName, bName, supplied = null) {
   return {
     sport: 'nba',
     sport_label: SPORT_LABELS.nba,
-    model: 'Expected-score + normal margin model',
+    model: hasTeamData ? 'Expected-score + normal margin model' : 'League-average fallback score model',
     team_a: aName,
     team_b: bName,
+    selected_fixture: selectedFixture,
     expected_score: { home: round(home, 1), away: round(away, 1) },
     expected_margin: round(margin, 1),
     spread_home: spread,
-    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    probabilities: Object.fromEntries(
+      Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
+    ),
     ...bettingFields({ values, best, used, actionable }),
-    data_mode: 'demo-synthetic',
+    data_mode: hasTeamData ? 'demo-synthetic-team' : 'demo-synthetic-league-average',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
-    data_diagnostics: [],
+    match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
+    limited_reliability: !hasTeamData,
+    reliability_label: hasTeamData ? 'STANDARDNÍ DEMO MODEL' : 'OMEZENÁ SPOLEHLIVOST',
+    data_diagnostics: hasTeamData ? [] : [{
+      team: `${aName} / ${bName}`,
+      code: 'LEAGUE_AVERAGE_FALLBACK',
+      message: 'Pro tuto dvojici zatím nejsou v modelu týmové statistiky; používá se ligový průměr.'
+    }],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
 }
 
-export async function predictNhl(aName, bName, supplied = null) {
-  const a = DEMO_DATA.nhl[aName];
-  const b = DEMO_DATA.nhl[bName];
-  if (!a || !b) throw new TypeError('Nepodporovaný NHL tým.');
+export async function predictNhl(aName, bName, supplied = null, selectedFixture = null) {
+  const defaults = { attack: 3.05, defense: 3.05, goalie: 1, powerplay: 1, home_adv: 0.12 };
+  const hasTeamData = Boolean(DEMO_DATA.nhl[aName] && DEMO_DATA.nhl[bName]);
+  const a = DEMO_DATA.nhl[aName] || defaults;
+  const b = DEMO_DATA.nhl[bName] || defaults;
 
   const homeLambda = clamp(a.attack * b.defense / 3 * a.powerplay / b.goalie + a.home_adv, 1.2, 5.5);
   const awayLambda = clamp(b.attack * a.defense / 3 * b.powerplay / a.goalie, 1.1, 5.2);
   const [pHome, pDraw, pAway, score] = scoreMatrix(homeLambda, awayLambda, 10);
 
   const liveResult = supplied
-    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: null }
-    : await loadLiveOdds('nhl', aName, bName);
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: selectedFixture }
+    : await loadLiveOdds('nhl', aName, bName, selectedFixture);
   const live = liveResult.odds;
   const used = supplied || live || DEMO_ODDS.nhl;
-  const actionable = Boolean(supplied || live);
+  const actionable = Boolean(supplied || live) && hasTeamData;
 
   const market = normalizedImpliedProbabilities({
     home: Number(used.home || 0),
@@ -331,32 +410,44 @@ export async function predictNhl(aName, bName, supplied = null) {
     away: Number(used.away || 0),
   });
   const probs = { home: pHome, draw: pDraw, away: pAway };
-  const values = Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)]));
+  const values = Object.fromEntries(
+    Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)])
+  );
   const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
   return {
     sport: 'nhl',
     sport_label: SPORT_LABELS.nhl,
-    model: 'Poisson goals + goalie/powerplay model',
+    model: hasTeamData ? 'Poisson goals + goalie/powerplay model' : 'League-average Poisson fallback',
     team_a: aName,
     team_b: bName,
+    selected_fixture: selectedFixture,
     expected_score: { home: round(homeLambda, 2), away: round(awayLambda, 2) },
     most_likely_score: { home: score[0], away: score[1] },
-    probabilities: Object.fromEntries(Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])),
+    probabilities: Object.fromEntries(
+      Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
+    ),
     ...bettingFields({ values, best, used, actionable }),
-    data_mode: 'demo-synthetic',
+    data_mode: hasTeamData ? 'demo-synthetic-team' : 'demo-synthetic-league-average',
     odds_mode: supplied ? 'client-supplied' : liveResult.mode,
     odds_meta: supplied ? null : liveResult.meta || null,
-    data_diagnostics: [],
+    match_date: selectedFixture?.commence_time || liveResult?.meta?.commence_time || null,
+    limited_reliability: !hasTeamData,
+    reliability_label: hasTeamData ? 'STANDARDNÍ DEMO MODEL' : 'OMEZENÁ SPOLEHLIVOST',
+    data_diagnostics: hasTeamData ? [] : [{
+      team: `${aName} / ${bName}`,
+      code: 'LEAGUE_AVERAGE_FALLBACK',
+      message: 'Pro tuto dvojici zatím nejsou v modelu týmové statistiky; používá se ligový průměr.'
+    }],
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
   };
 }
 
-export async function predictMatch(sport, a, b, odds = null) {
+export async function predictMatch(sport, a, b, odds = null, selectedFixture = null) {
   if (!sport || !a || !b) throw new TypeError('Chybí sport nebo tým.');
   if (a === b) throw new TypeError('Vyber dva různé týmy.');
-  if (['cz_football', 'fifa'].includes(sport)) return predictFootball(sport, a, b, odds);
-  if (sport === 'nba') return predictNba(a, b, odds);
-  if (sport === 'nhl') return predictNhl(a, b, odds);
+  if (['cz_football', 'fifa'].includes(sport)) return predictFootball(sport, a, b, odds, selectedFixture);
+  if (sport === 'nba') return predictNba(a, b, odds, selectedFixture);
+  if (sport === 'nhl') return predictNhl(a, b, odds, selectedFixture);
   throw new TypeError('Nepodporovaný sport.');
 }
