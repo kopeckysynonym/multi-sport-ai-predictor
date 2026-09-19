@@ -1,5 +1,5 @@
 import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
-import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
+import { clamp, expectedRoi, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
 import { loadTennisPlayerModelData } from './tennis.mjs';
 import {
   fetchEventOdds,
@@ -30,9 +30,19 @@ function roundedValues(values) {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round(value, 1)]));
 }
 
-export function bettingFields({ values, best, used, actionable, limitedReliability = false }) {
+export function bettingFields({
+  values,
+  roiValues = {},
+  best,
+  used,
+  actionable,
+  limitedReliability = false
+}) {
   const valueAvailable = Boolean(actionable);
   const recommendationAllowed = valueAvailable && !limitedReliability;
+  const bestMarket = valueAvailable ? best?.[0] || null : null;
+  const bestEdge = bestMarket != null ? Number(values?.[bestMarket]) : NaN;
+  const bestRoi = bestMarket != null ? Number(roiValues?.[bestMarket]) : NaN;
   return {
     is_actionable: recommendationAllowed,
     value_available: valueAvailable,
@@ -40,11 +50,17 @@ export function bettingFields({ values, best, used, actionable, limitedReliabili
     recommendation_allowed: recommendationAllowed,
     market_odds: valueAvailable ? used : null,
     demo_market_odds: valueAvailable ? null : used,
+    edge_by_market: valueAvailable ? roundedValues(values) : null,
+    expected_roi_by_market: valueAvailable ? roundedValues(roiValues) : null,
     value_bets: valueAvailable ? roundedValues(values) : null,
     demo_value_bets: valueAvailable ? null : roundedValues(values),
-    best_value_market: valueAvailable ? best[0] : null,
-    best_value_pct: valueAvailable ? round(best[1], 1) : null,
-    recommendation: recommendationAllowed ? recommendation(best[1]) : 'BEZ DOPORUČENÍ',
+    best_value_market: bestMarket,
+    best_edge_pct: valueAvailable && Number.isFinite(bestEdge) ? round(bestEdge, 1) : null,
+    best_expected_roi_pct: valueAvailable && Number.isFinite(bestRoi) ? round(bestRoi, 1) : null,
+    best_value_pct: valueAvailable && Number.isFinite(bestEdge) ? round(bestEdge, 1) : null,
+    recommendation: recommendationAllowed && Number.isFinite(bestRoi)
+      ? recommendation(bestRoi)
+      : 'BEZ DOPORUČENÍ',
     recommendation_block_reason: valueAvailable && limitedReliability
       ? 'OMEZENÁ SPOLEHLIVOST'
       : !valueAvailable ? 'NEDOSTUPNÉ REÁLNÉ KURZY' : null,
@@ -279,7 +295,15 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
   const values = Object.fromEntries(
     Object.entries(probs).map(([key, probability]) => [key, valueBet(probability, market[key] ?? probability)])
   );
-  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const roiValues = Object.fromEntries(
+    Object.entries(probs).map(([key, probability]) => [
+      key,
+      expectedRoi(probability, Number(used[key]))
+    ])
+  );
+  const best = Object.entries(roiValues)
+    .filter(([,value])=>Number.isFinite(value))
+    .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
   const dataDiagnostics = [
     al.diagnostic ? { team: aName, ...al.diagnostic } : null,
@@ -344,7 +368,7 @@ export async function predictFootball(sport, aName, bName, supplied = null, sele
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
-    ...bettingFields({ values, best, used, actionable, limitedReliability }),
+    ...bettingFields({ values, roiValues, best, used, actionable, limitedReliability }),
     data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-')
       ? (al.mode === bl.mode ? al.mode : 'api-football-mixed')
       : 'demo-synthetic',
@@ -439,7 +463,13 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
     home_moneyline: valueBet(pHome, market.home ?? pHome),
     away_moneyline: valueBet(pAway, market.away ?? pAway),
   };
-  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const roiValues = {
+    home_moneyline: expectedRoi(pHome, Number(used.home)),
+    away_moneyline: expectedRoi(pAway, Number(used.away)),
+  };
+  const best = Object.entries(roiValues)
+    .filter(([,value])=>Number.isFinite(value))
+    .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
   const rangeTimes = [
     a?.range?.from,a?.range?.to,b?.range?.from,b?.range?.to
@@ -479,7 +509,7 @@ export async function predictNba(aName, bName, supplied = null, selectedFixture 
     probabilities: Object.fromEntries(
       Object.entries(probs).map(([key, probability]) => [key, round(probability * 100, 1)])
     ),
-    ...bettingFields({ values, best, used, actionable, limitedReliability }),
+    ...bettingFields({ values, roiValues, best, used, actionable, limitedReliability }),
     data_mode: 'espn-nba-current-season-last10',
     data_season_label: commonSeasonLabel || null,
     current_season_only: true,
@@ -586,7 +616,15 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
       valueBet(probability, market[key] ?? probability)
     ])
   );
-  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const roiValues = Object.fromEntries(
+    Object.entries(probsForValue).map(([key, probability]) => [
+      key,
+      expectedRoi(probability, Number(used[key]))
+    ])
+  );
+  const best = Object.entries(roiValues)
+    .filter(([,value])=>Number.isFinite(value))
+    .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
   const rangeTimes = [
     a?.range?.from,a?.range?.to,b?.range?.from,b?.range?.to
@@ -621,7 +659,7 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
       home_moneyline: round(pHomeMoneyline * 100, 1),
       away_moneyline: round(pAwayMoneyline * 100, 1),
     },
-    ...bettingFields({ values, best, used, actionable, limitedReliability }),
+    ...bettingFields({ values, roiValues, best, used, actionable, limitedReliability }),
     data_mode: 'nhl-current-season-last10',
     data_season_label: commonSeasonLabel || null,
     current_season_only: true,
@@ -682,7 +720,13 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
     home: valueBet(pA, market.home ?? pA),
     away: valueBet(pB, market.away ?? pB)
   };
-  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const roiValues = {
+    home: expectedRoi(pA, Number(used.home)),
+    away: expectedRoi(pB, Number(used.away))
+  };
+  const best = Object.entries(roiValues)
+    .filter(([,value])=>Number.isFinite(value))
+    .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
   const limitedReliability = data.data_status !== 'PŘIPRAVENO';
   const predictedWinner = pA >= pB ? aName : bName;
   const predictedWinnerProbability = Math.max(pA, pB);
@@ -703,7 +747,7 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
       home: round(pA * 100, 1),
       away: round(pB * 100, 1)
     },
-    ...bettingFields({ values, best, used, actionable, limitedReliability }),
+    ...bettingFields({ values, roiValues, best, used, actionable, limitedReliability }),
     data_mode: 'tennis-rolling-12m-elo',
     data_season_label: 'Rolling 12 měsíců',
     current_season_only: false,
