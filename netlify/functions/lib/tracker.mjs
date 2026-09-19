@@ -84,11 +84,15 @@ export function buildPredictionSnapshot(result, fixture = null, now = new Date()
   };
 
   return {
-    schema_version: 2,
+    schema_version: 3,
     record_id: id || `${safePart(match.home_team)}-${safePart(match.away_team)}-${safePart(matchDate)}`,
     sport: result?.sport || null,
     sport_label: result?.sport_label || null,
-    match,
+    match: {
+      ...match,
+      sport_key: fixture?.sport_key || result?.selected_fixture?.sport_key || null,
+      provider: fixture?.provider || result?.selected_fixture?.provider || null,
+    },
     prediction_time: predictionTime,
     bookmaker_odds: result?.market_odds || null,
     odds_mode: result?.odds_mode || null,
@@ -151,24 +155,38 @@ export async function savePredictionSnapshot(result, fixture = null, now = new D
   };
 }
 
-export async function listPredictionSnapshots({ sport = null, limit = 20 } = {}) {
+export async function listPredictionEntries({ sport = null } = {}) {
   const store = trackerStore();
   const prefix = sport ? `predictions/${safePart(sport)}/` : 'predictions/';
   const { blobs } = await store.list({ prefix });
 
-  const capped = Math.max(1, Math.min(Number(limit) || 20, 100));
-  const values = await Promise.all(
+  const entries = await Promise.all(
     blobs.map(async blob => {
       try {
-        return await store.get(blob.key, { type: 'json' });
+        const snapshot = await store.get(blob.key, { type: 'json' });
+        return snapshot ? { key: blob.key, snapshot } : null;
       } catch {
         return null;
       }
     })
   );
 
-  return values
-    .filter(Boolean)
+  return entries.filter(Boolean);
+}
+
+export async function updatePredictionSnapshot(key, snapshot) {
+  if (!key || !snapshot) throw new TypeError('Chybí key nebo snapshot Prediction Trackeru.');
+  const store = trackerStore();
+  await store.setJSON(key, snapshot);
+  return snapshot;
+}
+
+export async function listPredictionSnapshots({ sport = null, limit = 20 } = {}) {
+  const entries = await listPredictionEntries({ sport });
+  const capped = Math.max(1, Math.min(Number(limit) || 20, 100));
+
+  return entries
+    .map(entry => entry.snapshot)
     .sort((a, b) => Date.parse(b?.prediction_time || 0) - Date.parse(a?.prediction_time || 0))
     .slice(0, capped);
 }
