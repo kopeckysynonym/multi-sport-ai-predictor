@@ -86,6 +86,23 @@
       <p id="nbaSourceNote" class="muted small mb-0"></p>
     </div>
 
+    <div id="nhlStatsSection" class="mt-4 d-none">
+      <h5>NHL data – aktuální sezona, max. 10 zápasů</h5>
+      <div class="table-responsive">
+        <table class="table table-dark table-sm align-middle mb-2">
+          <thead>
+            <tr>
+              <th>Metrika</th>
+              <th id="nhlTeamAHeader">Tým A</th>
+              <th id="nhlTeamBHeader">Tým B</th>
+            </tr>
+          </thead>
+          <tbody id="nhlStatsBody"></tbody>
+        </table>
+      </div>
+      <p id="nhlSourceNote" class="muted small mb-0"></p>
+    </div>
+
     <p class="muted mt-3 mb-0" id="modes"></p>
     <div id="diagnostics" class="alert alert-warning mt-3 mb-0 d-none"></div>
   </div>
@@ -144,6 +161,13 @@ function formText(form){
   return `${form.wins}-${form.losses} · ${ppg}/${papg} bodů`;
 }
 
+function hockeyFormText(form){
+  if(!form||!form.games)return 'bez vzorku';
+  const gf=Number.isFinite(form.gfpg)?Number(form.gfpg).toFixed(2):'–';
+  const ga=Number.isFinite(form.gapg)?Number(form.gapg).toFixed(2):'–';
+  return `${form.wins}-${form.losses} · GF/GA ${gf}/${ga}`;
+}
+
 function metricValue(value,suffix=''){
   return Number.isFinite(Number(value)) ? Number(value).toFixed(1)+suffix : '–';
 }
@@ -176,7 +200,8 @@ function renderFixtureMeta(){
 
   const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
 
-  if(sport.value==='nba'&&event.analysis_available===false){
+  const seasonGated=['nba','nhl'].includes(sport.value);
+  if(seasonGated&&event.analysis_available===false){
     const h=event.current_season_games?.home;
     const a=event.current_season_games?.away;
     const counts=Number.isFinite(Number(h))&&Number.isFinite(Number(a))
@@ -185,7 +210,7 @@ function renderFixtureMeta(){
     parts.push(`NEDOSTATEK DAT · ${counts}`);
     go.disabled=true;
   }else{
-    if(sport.value==='nba'&&event.data_status){
+    if(seasonGated&&event.data_status){
       parts.push(event.data_status);
     }
     go.disabled=false;
@@ -221,9 +246,10 @@ async function loadUpcoming(){
     fixture.innerHTML=events.map((event,index)=>{
       const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
       const league=event.league?' · '+event.league:'';
-      const availability=sport.value==='nba'&&event.analysis_available===false
+      const seasonGated=['nba','nhl'].includes(sport.value);
+      const availability=seasonGated&&event.analysis_available===false
         ? ' · NEDOSTATEK DAT'
-        : sport.value==='nba'&&event.data_status
+        : seasonGated&&event.data_status
           ? ' · '+event.data_status
           : '';
       return `<option value="${index}">${when} — ${event.home_team} vs ${event.away_team}${league}${availability}</option>`;
@@ -361,6 +387,32 @@ function renderResult(d,event){
     nbaSection.classList.add('d-none');
   }
 
+  const nhlSection=document.querySelector('#nhlStatsSection');
+  if(d.sport==='nhl'&&d.nhl_team_stats?.team_a&&d.nhl_team_stats?.team_b){
+    const aStats=d.nhl_team_stats.team_a;
+    const bStats=d.nhl_team_stats.team_b;
+    document.querySelector('#nhlTeamAHeader').textContent=d.team_a;
+    document.querySelector('#nhlTeamBHeader').textContent=d.team_b;
+
+    const rows=[
+      ['Bilance použitého vzorku',aStats.wins+'-'+aStats.losses,bStats.wins+'-'+bStats.losses],
+      ['Góly vstřelené / zápas',metricValue(aStats.goals_for),metricValue(bStats.goals_for)],
+      ['Góly obdržené / zápas',metricValue(aStats.goals_against),metricValue(bStats.goals_against)],
+      ['Střely na branku / zápas',metricValue(aStats.shots_for),metricValue(bStats.shots_for)],
+      ['Střely proti / zápas',metricValue(aStats.shots_against),metricValue(bStats.shots_against)],
+      ['Save % brankářů',metricValue(aStats.goalie_save_pct,'%'),metricValue(bStats.goalie_save_pct,'%')],
+      ['Domácí forma',hockeyFormText(aStats.home_form),hockeyFormText(bStats.home_form)],
+      ['Venkovní forma',hockeyFormText(aStats.away_form),hockeyFormText(bStats.away_form)]
+    ];
+    document.querySelector('#nhlStatsBody').innerHTML=rows
+      .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
+      .join('');
+    document.querySelector('#nhlSourceNote').textContent=d.data_source_note||'';
+    nhlSection.classList.remove('d-none');
+  }else{
+    nhlSection.classList.add('d-none');
+  }
+
   document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
   showDiagnostics(d);
   res.classList.remove('d-none');
@@ -369,7 +421,7 @@ function renderResult(d,event){
 async function predict(){
   const event=selectedEvent();
   if(!event)return;
-  if(sport.value==='nba'&&event.analysis_available===false){
+  if(['nba','nhl'].includes(sport.value)&&event.analysis_available===false){
     renderFixtureMeta();
     return;
   }
@@ -400,7 +452,7 @@ async function predict(){
   }finally{
     go.textContent='Analyzovat zápas';
     const current=selectedEvent();
-    go.disabled=Boolean(sport.value==='nba'&&current?.analysis_available===false);
+    go.disabled=Boolean(['nba','nhl'].includes(sport.value)&&current?.analysis_available===false);
   }
 }
 
