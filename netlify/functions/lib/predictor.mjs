@@ -1,5 +1,6 @@
 import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
 import { clamp, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
+import { loadTennisPlayerModelData } from './tennis.mjs';
 import {
   fetchEventOdds,
   findMatchOdds,
@@ -645,11 +646,98 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
   };
 }
 
+export async function predictTennis(aName, bName, supplied = null, selectedFixture = null) {
+  if (!selectedFixture?.sport_key || !selectedFixture?.commence_time) {
+    throw Object.assign(
+      new Error('Tenisová predikce vyžaduje konkrétní nadcházející ATP/WTA utkání.'),
+      { status: 422, code: 'TENNIS_FIXTURE_REQUIRED' }
+    );
+  }
+
+  const data = await loadTennisPlayerModelData(aName, bName, selectedFixture);
+  if (!data.analysis_available) {
+    throw Object.assign(
+      new Error(
+        `Pro tenisovou analýzu je potřeba alespoň 5 zápasů za posledních 12 měsíců u obou hráčů. ${aName}: ${data.player_a.matches_12m}, ${bName}: ${data.player_b.matches_12m}.`
+      ),
+      { status: 422, code: 'TENNIS_NOT_ENOUGH_12M_MATCHES' }
+    );
+  }
+
+  const pA = data.probability_a;
+  const pB = data.probability_b;
+
+  const liveResult = supplied
+    ? { odds: null, mode: 'client-supplied', diagnostic: null, meta: selectedFixture }
+    : await loadLiveOdds('tennis', aName, bName, selectedFixture);
+  const live = liveResult.odds;
+  const used = supplied || live || DEMO_ODDS.tennis;
+  const actionable = Boolean(supplied || live);
+
+  const market = normalizedImpliedProbabilities({
+    home: Number(used.home || 0),
+    away: Number(used.away || 0)
+  });
+  const values = {
+    home: valueBet(pA, market.home ?? pA),
+    away: valueBet(pB, market.away ?? pB)
+  };
+  const best = Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+  const limitedReliability = data.data_status !== 'PŘIPRAVENO';
+  const predictedWinner = pA >= pB ? aName : bName;
+  const predictedWinnerProbability = Math.max(pA, pB);
+
+  return {
+    sport: 'tennis',
+    sport_label: SPORT_LABELS.tennis,
+    model: 'Rolling 12m Elo + surface Elo + recent form',
+    team_a: aName,
+    team_b: bName,
+    selected_fixture: selectedFixture,
+    expected_score: null,
+    predicted_winner: predictedWinner,
+    predicted_winner_probability: round(predictedWinnerProbability * 100, 1),
+    surface: data.surface,
+    tennis_tour: data.tour.toUpperCase(),
+    probabilities: {
+      home: round(pA * 100, 1),
+      away: round(pB * 100, 1)
+    },
+    ...bettingFields({ values, best, used, actionable, limitedReliability }),
+    data_mode: 'tennis-rolling-12m-elo',
+    data_season_label: 'Rolling 12 měsíců',
+    current_season_only: false,
+    rolling_window_days: 365,
+    odds_mode: supplied ? 'client-supplied' : liveResult.mode,
+    odds_meta: supplied ? null : liveResult.meta || null,
+    match_date: selectedFixture.commence_time,
+    historical_match_range: {
+      from: data.rolling_from,
+      to: data.rolling_to
+    },
+    data_age_days: data.data_age_days,
+    limited_reliability: limitedReliability,
+    reliability_label: limitedReliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
+    data_matches_used: {
+      team_a: data.player_a.matches_12m,
+      team_b: data.player_b.matches_12m
+    },
+    tennis_player_stats: {
+      player_a: data.player_a,
+      player_b: data.player_b
+    },
+    data_source_note: 'ATP/WTA výsledky: rolling okno posledních 12 měsíců. Model kombinuje celkové Elo, Elo na povrchu a poslední formu; kurzy jsou z The Odds API.',
+    data_diagnostics: [],
+    odds_diagnostic: supplied ? null : liveResult.diagnostic
+  };
+}
+
 export async function predictMatch(sport, a, b, odds = null, selectedFixture = null) {
   if (!sport || !a || !b) throw new TypeError('Chybí sport nebo tým.');
   if (a === b) throw new TypeError('Vyber dva různé týmy.');
   if (['cz_football', 'fifa'].includes(sport)) return predictFootball(sport, a, b, odds, selectedFixture);
   if (sport === 'nba') return predictNba(a, b, odds, selectedFixture);
   if (sport === 'nhl') return predictNhl(a, b, odds, selectedFixture);
+  if (sport === 'tennis') return predictTennis(a, b, odds, selectedFixture);
   throw new TypeError('Nepodporovaný sport.');
 }
