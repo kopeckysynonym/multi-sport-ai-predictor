@@ -113,3 +113,16 @@ NHL predictions now follow the same season-safety rules as NBA and never pull ga
 - Previous-season games are excluded completely.
 
 The live NHL model uses the public NHL API for goals for/against, shots on goal, recent goalie save percentage from box scores, and home/away form. The Odds API remains the live odds source.
+
+
+## Current-season-only FIFA UEFA rule
+
+FIFA / UEFA predictions now use the same data-availability safety logic as NBA and NHL.
+
+- Uses only matches from the current competition season / tournament year for the selected fixture.
+- Uses up to the latest 10 completed matches before the selected fixture.
+- 0-2 completed matches for either team: the fixture is marked `NEDOSTATEK DAT` and analysis is disabled.
+- 3-9 completed matches: analysis is allowed but marked `OMEZENÁ SPOLEHLIVOST`; Value Bet is informational only and no `SÁZET` recommendation is issued.
+- 10+ completed matches: the model uses the latest 10 matches from the current season only.
+- Previous-season matches are never used as a fallback.
+- If the configured API-Football plan does not expose the current season, the fixture is marked unavailable instead of silently using an older season.
