@@ -301,6 +301,33 @@ function utcDateOffset(days){
   return date.toISOString().slice(0,10);
 }
 
+async function listCzFootballViaHeadToHead(leagueId){
+  const names=Object.keys(TEAM_MAPPING?.cz_football||{});
+  const pairs=[];
+  for(let i=0;i<names.length;i+=1){
+    for(let j=i+1;j<names.length;j+=1)pairs.push([names[i],names[j]]);
+  }
+
+  const ids=new Map();
+  for(const name of names){
+    ids.set(name,await resolveApiFootballTeamId('cz_football',name));
+  }
+
+  const settled=await Promise.allSettled(pairs.map(async([a,b])=>{
+    const payload=await apiFootball('fixtures/headtohead',{h2h:`${ids.get(a)}-${ids.get(b)}`});
+    return payload?.response||[];
+  }));
+
+  const now=Date.now();
+  const rows=settled
+    .filter(result=>result.status==='fulfilled')
+    .flatMap(result=>result.value)
+    .filter(row=>Number(row?.league?.id)===Number(leagueId))
+    .filter(row=>eventTime(row?.fixture?.date)>=now);
+
+  return [...new Map(rows.map(row=>[String(row?.fixture?.id),row])).values()];
+}
+
 async function listCzFootballUpcoming(){
   const cacheKey='upcoming:cz_football';
   const cached=cacheGet(cacheKey);
@@ -315,8 +342,14 @@ async function listCzFootballUpcoming(){
     return payloads.flatMap(payload=>payload?.response||[]);
   };
 
-  let rows=await fetchWindow(firstWindow);
-  if(!rows.length)rows=await fetchWindow(secondWindow);
+  let rows=[];
+  try{
+    rows=await fetchWindow(firstWindow);
+    if(!rows.length)rows=await fetchWindow(secondWindow);
+  }catch(error){
+    console.warn('Czech league date-window lookup failed, using head-to-head fallback:',error.message);
+    rows=await listCzFootballViaHeadToHead(leagueId);
+  }
 
   const now=Date.now();
   const events=rows
@@ -325,7 +358,7 @@ async function listCzFootballUpcoming(){
     .filter(event=>eventTime(event.commence_time)>=now)
     .sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
 
-  return cacheSet(cacheKey,events,10*60*1000);
+  return cacheSet(cacheKey,events.slice(0,30),10*60*1000);
 }
 
 export async function fetchOddsSports(all=true){
