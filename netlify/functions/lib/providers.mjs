@@ -1,5 +1,6 @@
 import { TEAM_MAPPING } from './data.mjs';
 import { fetchJson, ProviderError } from './http.mjs';
+import { enrichTennisUpcomingAvailability } from './tennis.mjs';
 const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map(),fifaCurrentSeasonCache=new Map();let apiFootballSeasonRangeCache=null;
 export function liveDataEnabled(){return !['0','false','no','off'].includes(String(process.env.LIVE_DATA_ENABLED||'true').toLowerCase());}
 export function normName(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
@@ -1406,6 +1407,13 @@ export async function fetchOddsSports(all=true){
 function oddsSportKeysForCategory(sport,sports){
   if(sport==='nba')return['basketball_nba'];
   if(sport==='nhl')return['icehockey_nhl'];
+  if(sport==='tennis'){
+    return (sports||[])
+      .filter(row=>String(row?.group||'').toLowerCase().includes('tennis'))
+      .map(row=>String(row?.key||''))
+      .filter(key=>key.startsWith('tennis_atp_')||key.startsWith('tennis_wta_'))
+      .slice(0,24);
+  }
   if(sport==='fifa'){
     const preferred=new Set([
       'soccer_fifa_world_cup',
@@ -1438,7 +1446,11 @@ async function listOddsUpcoming(sport){
   const cached=cacheGet(cacheKey);
   if(cached)return cached;
 
-  const sports=sport==='fifa'?await fetchOddsSports(true):[];
+  const sports=sport==='fifa'
+    ? await fetchOddsSports(true)
+    : sport==='tennis'
+      ? await fetchOddsSports(false)
+      : [];
   const keys=oddsSportKeysForCategory(sport,sports);
   const results=await Promise.allSettled(keys.map(async key=>({
     key,
@@ -1455,7 +1467,7 @@ async function listOddsUpcoming(sport){
   }
   events.sort((a,b)=>eventTime(a.commence_time)-eventTime(b.commence_time));
   const unique=[...new Map(events.map(event=>[`${event.provider}:${event.id}`,event])).values()];
-  const limit=['nba','nhl'].includes(sport)?20:sport==='fifa'?12:40;
+  const limit=['nba','nhl','tennis'].includes(sport)?20:sport==='fifa'?12:40;
   return cacheSet(cacheKey,unique.slice(0,limit),5*60*1000);
 }
 
@@ -1472,6 +1484,10 @@ export async function listUpcomingMatches(sport){
   if(sport==='fifa'){
     const events=await listOddsUpcoming('fifa');
     return enrichFifaUpcomingAvailability(events);
+  }
+  if(sport==='tennis'){
+    const events=await listOddsUpcoming('tennis');
+    return enrichTennisUpcomingAvailability(events);
   }
   throw new TypeError('Nepodporovaný sport.');
 }
