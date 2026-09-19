@@ -24,9 +24,10 @@ async function loadTeamData(sport, team) {
       return { data: fallback, mode: 'demo-synthetic', diagnostic: { code: 'MISSING_KEY', message: 'Chybí API_FOOTBALL_KEY.' } };
     }
     try {
+      const data = await loadLiveFootballTeamData(sport, team, fallback);
       return {
-        data: await loadLiveFootballTeamData(sport, team, fallback),
-        mode: 'api-football-live',
+        data,
+        mode: data.source_mode || 'api-football-live',
         diagnostic: null,
       };
     } catch (error) {
@@ -123,7 +124,7 @@ export async function predictFootball(sport, aName, bName, supplied = null) {
     best_value_market: best[0],
     best_value_pct: round(best[1], 1),
     recommendation: recommendation(best[1]),
-    data_mode: al.mode === 'api-football-live' && bl.mode === 'api-football-live' ? 'api-football-live' : 'demo-synthetic',
+    data_mode: al.mode.startsWith('api-football-') && bl.mode.startsWith('api-football-') ? (al.mode === bl.mode ? al.mode : 'api-football-mixed') : 'demo-synthetic',
     odds_mode: live ? 'the-odds-api-live' : supplied ? 'client-supplied' : 'demo',
     data_diagnostics: dataDiagnostics,
     odds_diagnostic: supplied ? null : liveResult.diagnostic,
