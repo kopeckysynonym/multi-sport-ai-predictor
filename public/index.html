@@ -86,6 +86,23 @@
       <p id="nbaSourceNote" class="muted small mb-0"></p>
     </div>
 
+    <div id="fifaStatsSection" class="mt-4 d-none">
+      <h5>FIFA / UEFA data – aktuální sezona, max. 10 zápasů</h5>
+      <div class="table-responsive">
+        <table class="table table-dark table-sm align-middle mb-2">
+          <thead>
+            <tr>
+              <th>Metrika</th>
+              <th id="fifaTeamAHeader">Tým A</th>
+              <th id="fifaTeamBHeader">Tým B</th>
+            </tr>
+          </thead>
+          <tbody id="fifaStatsBody"></tbody>
+        </table>
+      </div>
+      <p id="fifaSourceNote" class="muted small mb-0"></p>
+    </div>
+
     <div id="nhlStatsSection" class="mt-4 d-none">
       <h5>NHL data – aktuální sezona, max. 10 zápasů</h5>
       <div class="table-responsive">
@@ -200,7 +217,7 @@ function renderFixtureMeta(){
 
   const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
 
-  const seasonGated=['nba','nhl'].includes(sport.value);
+  const seasonGated=['fifa','nba','nhl'].includes(sport.value);
   if(seasonGated&&event.analysis_available===false){
     const h=event.current_season_games?.home;
     const a=event.current_season_games?.away;
@@ -246,7 +263,7 @@ async function loadUpcoming(){
     fixture.innerHTML=events.map((event,index)=>{
       const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
       const league=event.league?' · '+event.league:'';
-      const seasonGated=['nba','nhl'].includes(sport.value);
+      const seasonGated=['fifa','nba','nhl'].includes(sport.value);
       const availability=seasonGated&&event.analysis_available===false
         ? ' · NEDOSTATEK DAT'
         : seasonGated&&event.data_status
@@ -387,6 +404,35 @@ function renderResult(d,event){
     nbaSection.classList.add('d-none');
   }
 
+  const fifaSection=document.querySelector('#fifaStatsSection');
+  if(d.sport==='fifa'&&d.fifa_team_stats?.team_a&&d.fifa_team_stats?.team_b){
+    const aStats=d.fifa_team_stats.team_a;
+    const bStats=d.fifa_team_stats.team_b;
+    document.querySelector('#fifaTeamAHeader').textContent=d.team_a;
+    document.querySelector('#fifaTeamBHeader').textContent=d.team_b;
+
+    const footballFormText=form=>{
+      if(!form||!form.games)return 'bez vzorku';
+      const gf=Number.isFinite(form.gfpg)?Number(form.gfpg).toFixed(2):'–';
+      const ga=Number.isFinite(form.gapg)?Number(form.gapg).toFixed(2):'–';
+      return `${form.wins}-${form.draws}-${form.losses} · GF/GA ${gf}/${ga}`;
+    };
+    const rows=[
+      ['Použitých zápasů',aStats.matches_used,bStats.matches_used],
+      ['Góly vstřelené / zápas',metricValue(aStats.attack),metricValue(bStats.attack)],
+      ['Góly obdržené / zápas',metricValue(aStats.defense),metricValue(bStats.defense)],
+      ['Domácí forma',footballFormText(aStats.home_form),footballFormText(bStats.home_form)],
+      ['Venkovní forma',footballFormText(aStats.away_form),footballFormText(bStats.away_form)]
+    ];
+    document.querySelector('#fifaStatsBody').innerHTML=rows
+      .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
+      .join('');
+    document.querySelector('#fifaSourceNote').textContent=d.data_source_note||'';
+    fifaSection.classList.remove('d-none');
+  }else{
+    fifaSection.classList.add('d-none');
+  }
+
   const nhlSection=document.querySelector('#nhlStatsSection');
   if(d.sport==='nhl'&&d.nhl_team_stats?.team_a&&d.nhl_team_stats?.team_b){
     const aStats=d.nhl_team_stats.team_a;
@@ -421,7 +467,7 @@ function renderResult(d,event){
 async function predict(){
   const event=selectedEvent();
   if(!event)return;
-  if(['nba','nhl'].includes(sport.value)&&event.analysis_available===false){
+  if(['fifa','nba','nhl'].includes(sport.value)&&event.analysis_available===false){
     renderFixtureMeta();
     return;
   }
@@ -452,7 +498,7 @@ async function predict(){
   }finally{
     go.textContent='Analyzovat zápas';
     const current=selectedEvent();
-    go.disabled=Boolean(['nba','nhl'].includes(sport.value)&&current?.analysis_available===false);
+    go.disabled=Boolean(['fifa','nba','nhl'].includes(sport.value)&&current?.analysis_available===false);
   }
 }
 
