@@ -44,3 +44,25 @@ The `/api/odds` test suite covers successful event matching, missing events, emp
 ## Deploy
 
 Connect this repository to Netlify. `netlify.toml` defines the publish directory, functions directory and API redirects.
+
+
+## Upcoming matches workflow
+
+The frontend no longer asks the user to manually combine two teams. It loads real upcoming fixtures from:
+
+- **Czech football:** API-Football fixtures for the Czech top league.
+- **FIFA / UEFA:** The Odds API event feeds for supported FIFA and UEFA competitions.
+- **NBA / NHL:** The Odds API event feeds.
+
+Endpoint:
+
+```
+GET /api/upcoming?sport=cz_football
+GET /api/upcoming?sport=fifa
+GET /api/upcoming?sport=nba
+GET /api/upcoming?sport=nhl
+```
+
+The selected event is sent to `POST /api/predict` as `fixture`, so the prediction, kickoff time and odds refer to the same real event.
+
+For Czech football, `API_FOOTBALL_CZ_LEAGUE_ID` can optionally override the default league ID (`345`).
