@@ -617,10 +617,14 @@ export async function predictNhl(aName, bName, supplied = null, selectedFixture 
     ])
   );
   const roiValues = Object.fromEntries(
-    Object.entries(probsForValue).map(([key, probability]) => [
-      key,
-      expectedRoi(probability, Number(used[key]))
-    ])
+    Object.entries(probsForValue).map(([key, probability]) => {
+      const oddsKey = key === 'home_moneyline'
+        ? 'home'
+        : key === 'away_moneyline'
+          ? 'away'
+          : key;
+      return [key, expectedRoi(probability, Number(used[oddsKey]))];
+    })
   );
   const best = Object.entries(roiValues)
     .filter(([,value])=>Number.isFinite(value))
