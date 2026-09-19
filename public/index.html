@@ -152,9 +152,15 @@
     <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
       <div>
         <h4 class="mb-1">Prediction Tracker</h4>
-        <p class="muted mb-0">Poslední uložené předzápasové predikce.</p>
+        <p class="muted mb-0">Poslední uložené předzápasové predikce. Výsledky se automaticky vyhodnocují každou hodinu.</p>
       </div>
       <button id="loadTracker" type="button" class="btn btn-outline-light">Načíst historii</button>
+    </div>
+    <div id="trackerSummary" class="row g-2 mt-2 d-none">
+      <div class="col-md-3"><div class="border rounded p-2"><span class="muted">Vyhodnoceno</span><br><strong id="trackerSettled">0</strong></div></div>
+      <div class="col-md-3"><div class="border rounded p-2"><span class="muted">Bilance</span><br><strong id="trackerRecord">0-0-0</strong></div></div>
+      <div class="col-md-3"><div class="border rounded p-2"><span class="muted">Simulovaný P/L</span><br><strong id="trackerProfit">0.000 u</strong></div></div>
+      <div class="col-md-3"><div class="border rounded p-2"><span class="muted">Průběžné ROI</span><br><strong id="trackerRoi">–</strong></div></div>
     </div>
     <div id="trackerError" class="alert alert-warning mt-3 d-none"></div>
     <div id="trackerEmpty" class="muted mt-3 d-none">Zatím nejsou uložené žádné predikce.</div>
@@ -170,6 +176,8 @@
             <th>Edge</th>
             <th>Expected ROI</th>
             <th>Predikce</th>
+            <th>Skutečný výsledek</th>
+            <th>Sim. P/L</th>
             <th>Spolehlivost</th>
           </tr>
         </thead>
@@ -192,6 +200,11 @@ const res=document.querySelector('#result');
 const diagnostics=document.querySelector('#diagnostics');
 const trackerStatus=document.querySelector('#trackerStatus');
 const loadTrackerButton=document.querySelector('#loadTracker');
+const trackerSummary=document.querySelector('#trackerSummary');
+const trackerSettled=document.querySelector('#trackerSettled');
+const trackerRecord=document.querySelector('#trackerRecord');
+const trackerProfit=document.querySelector('#trackerProfit');
+const trackerRoi=document.querySelector('#trackerRoi');
 const trackerError=document.querySelector('#trackerError');
 const trackerEmpty=document.querySelector('#trackerEmpty');
 const trackerTableWrap=document.querySelector('#trackerTableWrap');
@@ -675,10 +688,27 @@ function trackerScore(score,row=null){
   return score.home+' : '+score.away;
 }
 
+function trackerActualResult(row){
+  const settlement=row?.settlement;
+  if(settlement?.status!=='SETTLED')return 'Čeká na výsledek';
+  const score=settlement.actual_score;
+  if(score&&score.home!=null&&score.away!=null){
+    return score.home+' : '+score.away;
+  }
+  return settlement.actual_result||'Vyhodnoceno';
+}
+
+function trackerProfitText(row){
+  const profit=Number(row?.settlement?.simulated_bet?.profit_units);
+  if(!Number.isFinite(profit))return '–';
+  return (profit>0?'+':'')+profit.toFixed(3)+' u';
+}
+
 async function loadTrackerHistory(){
   trackerError.classList.add('d-none');
   trackerEmpty.classList.add('d-none');
   trackerTableWrap.classList.add('d-none');
+  trackerSummary.classList.add('d-none');
   loadTrackerButton.disabled=true;
   loadTrackerButton.textContent='Načítám…';
 
@@ -686,6 +716,18 @@ async function loadTrackerHistory(){
     const r=await fetch('/api/tracker?limit=20',{cache:'no-store'});
     const d=await r.json();
     if(!r.ok)throw Error(d.error||'Nepodařilo se načíst Prediction Tracker.');
+
+    const perf=d.performance||{};
+    trackerSettled.textContent=Number(perf.settled_bets||0);
+    trackerRecord.textContent=(perf.wins||0)+'-'+(perf.losses||0)+'-'+(perf.pushes||0);
+    const profit=Number(perf.profit_units);
+    trackerProfit.textContent=Number.isFinite(profit)
+      ? (profit>0?'+':'')+profit.toFixed(3)+' u'
+      : '0.000 u';
+    trackerRoi.textContent=Number.isFinite(Number(perf.roi_pct))
+      ? signedMetric(perf.roi_pct,'%')
+      : '–';
+    trackerSummary.classList.remove('d-none');
 
     const rows=Array.isArray(d.predictions)?d.predictions:[];
     if(!rows.length){
@@ -712,6 +754,8 @@ async function loadTrackerHistory(){
         <td>${signedMetric(edgeValue,' p. b.')}</td>
         <td>${signedMetric(roiValue,'%')}</td>
         <td>${trackerScore(row.predicted_score,row)}</td>
+        <td>${trackerActualResult(row)}</td>
+        <td>${trackerProfitText(row)}</td>
         <td>${reliability}</td>
       </tr>`;
     }).join('');
