@@ -102,6 +102,10 @@ export function buildPredictionSnapshot(result, fixture = null, now = new Date()
     value_available: Boolean(result?.value_available),
     value_informational_only: Boolean(result?.value_informational_only),
     predicted_score: result?.expected_score || null,
+    predicted_winner: result?.predicted_winner || null,
+    predicted_winner_probability_pct: Number.isFinite(Number(result?.predicted_winner_probability))
+      ? Number(result.predicted_winner_probability)
+      : null,
     most_likely_score: result?.most_likely_score || null,
     reliability: {
       label: result?.reliability_label || null,
