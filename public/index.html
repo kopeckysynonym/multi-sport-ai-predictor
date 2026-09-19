@@ -41,6 +41,10 @@
     <p>Model: <strong id="model"></strong></p>
     <p id="dataSeasonRow" class="d-none">Sezóna dat modelu: <strong id="dataSeason"></strong></p>
     <p id="targetSeasonRow" class="d-none">Sezóna predikovaného zápasu: <strong id="targetSeason"></strong></p>
+    <p id="matchDateRow" class="d-none">Datum zápasu: <strong id="matchDate"></strong></p>
+    <p id="historyRangeRow" class="d-none">Rozsah použitých historických zápasů: <strong id="historyRange"></strong></p>
+    <p id="dataAgeRow" class="d-none">Stáří dat: <strong id="dataAge"></strong></p>
+    <p id="reliabilityRow" class="d-none">Spolehlivost predikce: <span id="reliability" class="badge"></span></p>
     <p>Odhad skóre: <strong id="score"></strong></p>
     <p>Value Bet: <strong id="value"></strong> · <span id="rec" class="badge"></span></p>
     <h5>Pravděpodobnosti</h5>
@@ -70,6 +74,30 @@ async function teams(){
     err.textContent=e.message;
     err.classList.remove('d-none');
   }
+}
+
+function formatDateOnly(value){
+  if(!value)return null;
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return null;
+  return new Intl.DateTimeFormat('cs-CZ',{day:'numeric',month:'numeric',year:'numeric'}).format(date);
+}
+
+function formatMatchDate(value){
+  if(!value)return null;
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return null;
+  return new Intl.DateTimeFormat('cs-CZ',{
+    day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'
+  }).format(date);
+}
+
+function seasonsAgeLabel(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return null;
+  if(n===1)return '1 sezóna';
+  if(n>=2&&n<=4)return n+' sezóny';
+  return n+' sezon';
 }
 
 function showDiagnostics(d){
@@ -112,6 +140,50 @@ async function predict(){
     }else{
       targetSeasonRow.classList.add('d-none');
     }
+
+    const matchDateRow=document.querySelector('#matchDateRow');
+    const matchDateText=formatMatchDate(d.match_date);
+    if(matchDateText){
+      document.querySelector('#matchDate').textContent=matchDateText;
+      matchDateRow.classList.remove('d-none');
+    }else{
+      matchDateRow.classList.add('d-none');
+    }
+
+    const historyRangeRow=document.querySelector('#historyRangeRow');
+    const from=formatDateOnly(d.historical_match_range?.from);
+    const to=formatDateOnly(d.historical_match_range?.to);
+    if(from&&to){
+      const aCount=d.data_matches_used?.team_a;
+      const bCount=d.data_matches_used?.team_b;
+      const countText=Number.isFinite(aCount)&&Number.isFinite(bCount)
+        ? ` (${aCount} + ${bCount} zápasů)`
+        : '';
+      document.querySelector('#historyRange').textContent=from+' – '+to+countText;
+      historyRangeRow.classList.remove('d-none');
+    }else{
+      historyRangeRow.classList.add('d-none');
+    }
+
+    const dataAgeRow=document.querySelector('#dataAgeRow');
+    const ageText=seasonsAgeLabel(d.data_age_seasons);
+    if(ageText){
+      document.querySelector('#dataAge').textContent=ageText;
+      dataAgeRow.classList.remove('d-none');
+    }else{
+      dataAgeRow.classList.add('d-none');
+    }
+
+    const reliabilityRow=document.querySelector('#reliabilityRow');
+    const reliability=document.querySelector('#reliability');
+    if(d.reliability_label){
+      reliability.textContent=d.reliability_label;
+      reliability.className='badge '+(d.limited_reliability?'text-bg-warning':'text-bg-success');
+      reliabilityRow.classList.remove('d-none');
+    }else{
+      reliabilityRow.classList.add('d-none');
+    }
+
     document.querySelector('#score').textContent=d.expected_score.home+' : '+d.expected_score.away;
     const value=document.querySelector('#value');
     const rec=document.querySelector('#rec');
