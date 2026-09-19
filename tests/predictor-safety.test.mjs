@@ -274,6 +274,11 @@ test('tennis rolling Elo model favors player with stronger recent results', () =
   assert.ok(model.probability_a > 0.5);
   assert.ok(model.player_a.elo > model.player_b.elo);
   assert.ok(model.player_a.surface_elo > model.player_b.surface_elo);
+  assert.deepEqual(model.actual_match_range, {
+    from: '2026-01-01T12:00:00.000Z',
+    to: '2026-08-01T12:00:00.000Z'
+  });
+  assert.equal(model.newest_available_match_date, '2026-08-01T12:00:00.000Z');
 });
 
 test('tennis availability uses rolling 12-month thresholds instead of season reset', () => {
