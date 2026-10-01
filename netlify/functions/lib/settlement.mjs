@@ -1,5 +1,6 @@
 import { listPredictionEntries, updatePredictionSnapshot } from './tracker.mjs';
 import { syncSettlementToSharePoint } from './sharepoint-sync.mjs';
+import { getCs2CompletedScore } from './cs2.mjs';
 
 function env(name) {
   try {
@@ -274,6 +275,7 @@ async function apiFootballFixture(fixtureId) {
 }
 
 function canUseOddsScores(snapshot, nowMs) {
+  if (snapshot?.sport === 'cs2') return false;
   const sportKey = snapshot?.match?.sport_key;
   const eventId = snapshot?.match?.event_id;
   const matchMs = Date.parse(snapshot?.match?.commence_time || '');
@@ -335,6 +337,18 @@ export async function settlePendingPredictions({ now = new Date(), limit = 100 }
         } catch (error) {
           diagnostics.push({ record_id: snapshot.record_id, source: 'chance-liga-official', message: error.message });
         }
+      }
+    } else if (snapshot?.sport === 'cs2' && snapshot?.match?.event_id) {
+      try {
+        const score = await getCs2CompletedScore(snapshot.match.event_id);
+        if (score) {
+          settlement = settlePaperBet(snapshot, score, 'esportsodds', now.toISOString());
+          if (settlement && snapshot?.odds_mode === 'esportsodds-eo-market') {
+            settlement = { ...settlement, simulated_bet: null };
+          }
+        }
+      } catch (error) {
+        diagnostics.push({ record_id: snapshot.record_id, source: 'esportsodds', message: error.message });
       }
     } else if (snapshot?.match?.event_id) {
       const event = oddsResults.get(String(snapshot.match.event_id));
