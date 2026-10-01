@@ -11,6 +11,7 @@ import {
   summarizeApiFootballMatchWinner
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
+import { cs2ModelProbability, cs2SeriesProbability, summarizeCs2MarketOdds } from '../netlify/functions/lib/cs2.mjs';
 import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
 import { extractChanceLigaScoreFromHtml, settlePaperBet, trackerPerformanceSummary } from '../netlify/functions/lib/settlement.mjs';
 import {
@@ -320,6 +321,41 @@ test('tennis availability uses rolling 12-month thresholds instead of season res
   );
 });
 
+
+test('CS2 BO-series conversion increases favorite probability in longer series', () => {
+  const bo1 = cs2SeriesProbability(0.6, 'bo1');
+  const bo3 = cs2SeriesProbability(0.6, 'bo3');
+  const bo5 = cs2SeriesProbability(0.6, 'bo5');
+  assert.ok(bo3 > bo1);
+  assert.ok(bo5 > bo3);
+});
+
+test('CS2 model uses conservative Glicko-2 ratings', () => {
+  const result = cs2ModelProbability(
+    { conservative_rating: 1700 },
+    { conservative_rating: 1500 },
+    'bo3'
+  );
+  assert.ok(result.map_probability_a > 0.5);
+  assert.ok(result.series_probability_a > result.map_probability_a);
+});
+
+test('CS2 eo_market parser takes latest pre-match match-winner prices', () => {
+  const rows = [
+    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'home', price: 1.9, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 },
+    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'away', price: 2.1, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 },
+    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'home', price: 1.8, captured_at: '2026-09-30T10:00:00Z', in_play: false, book_count: 3 },
+    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'away', price: 2.2, captured_at: '2026-09-30T10:00:00Z', in_play: false, book_count: 3 },
+    { source: 'eo_market', market_type: 'map_winner', map_number: 1, outcome_key: 'home', price: 1.7, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 }
+  ];
+  assert.deepEqual(summarizeCs2MarketOdds(rows), {
+    home: 1.9,
+    away: 2.1,
+    captured_at: '2026-10-01T10:00:00Z',
+    book_count: 4,
+    source: 'eo_market'
+  });
+});
 
 test('automatic settlement computes one-unit simulated win and loss correctly', () => {
   const base = {
