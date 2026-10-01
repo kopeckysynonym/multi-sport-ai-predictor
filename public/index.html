@@ -18,7 +18,7 @@
 <body>
 <main class="container py-5">
   <h1>Multi-Sport AI Predictor</h1>
-  <p class="muted">Skutečné nadcházející zápasy · Fotbal ČR · FIFA/UEFA · NBA · NHL · Tenis ATP/WTA</p>
+  <p class="muted">Skutečné nadcházející zápasy · Fotbal ČR · FIFA/UEFA · NBA · NHL · Tenis ATP/WTA · CS2</p>
 
   <div class="card p-4">
     <div class="row g-3 align-items-end">
@@ -30,6 +30,7 @@
           <option value="nba">NBA</option>
           <option value="nhl">NHL</option>
           <option value="tennis">Tenis ATP / WTA</option>
+          <option value="cs2">CS2 Esports</option>
         </select>
       </div>
 
@@ -141,6 +142,24 @@
         </table>
       </div>
       <p id="tennisSourceNote" class="muted small mb-0"></p>
+    </div>
+
+    <div id="cs2StatsSection" class="mt-4 d-none">
+      <h5>CS2 – Glicko-2 síla týmů</h5>
+      <p class="mb-2">Formát série: <strong id="cs2Format">–</strong></p>
+      <div class="table-responsive">
+        <table class="table table-dark table-sm align-middle mb-2">
+          <thead>
+            <tr>
+              <th>Metrika</th>
+              <th id="cs2TeamAHeader">Tým A</th>
+              <th id="cs2TeamBHeader">Tým B</th>
+            </tr>
+          </thead>
+          <tbody id="cs2StatsBody"></tbody>
+        </table>
+      </div>
+      <p id="cs2SourceNote" class="muted small mb-0"></p>
     </div>
 
     <p class="muted mt-3 mb-0" id="modes"></p>
@@ -263,7 +282,7 @@ function metricValue(value,suffix=''){
 }
 
 function probabilityLabel(key,d=null){
-  if(d?.sport==='tennis'){
+  if(['tennis','cs2'].includes(d?.sport)){
     if(key==='home')return d.team_a;
     if(key==='away')return d.team_b;
   }
@@ -451,7 +470,7 @@ function renderResult(d,event){
 
   const scoreEl=document.querySelector('#score');
   const scoreLabel=document.querySelector('#scoreLabel');
-  if(d.sport==='tennis'){
+  if(['tennis','cs2'].includes(d.sport)){
     scoreLabel.textContent='Predikovaný vítěz';
     scoreEl.textContent=d.predicted_winner
       ? d.predicted_winner+' ('+d.predicted_winner_probability+' %)'
@@ -603,6 +622,28 @@ function renderResult(d,event){
     tennisSection.classList.remove('d-none');
   }else{
     tennisSection.classList.add('d-none');
+  }
+
+  const cs2Section=document.querySelector('#cs2StatsSection');
+  if(d.sport==='cs2'&&d.cs2_team_stats?.team_a&&d.cs2_team_stats?.team_b){
+    const aStats=d.cs2_team_stats.team_a;
+    const bStats=d.cs2_team_stats.team_b;
+    document.querySelector('#cs2TeamAHeader').textContent=d.team_a;
+    document.querySelector('#cs2TeamBHeader').textContent=d.team_b;
+    document.querySelector('#cs2Format').textContent=String(d.cs2_team_stats.format||'bo3').toUpperCase();
+    const rows=[
+      ['Glicko-2 rating',metricValue(aStats.rating),metricValue(bStats.rating)],
+      ['Rating deviation (RD)',metricValue(aStats.rd),metricValue(bStats.rd)],
+      ['Conservative rating',metricValue(aStats.conservative_rating),metricValue(bStats.conservative_rating)],
+      ['Rating bodů ve vzorku',aStats.points_used,bStats.points_used]
+    ];
+    document.querySelector('#cs2StatsBody').innerHTML=rows
+      .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
+      .join('');
+    document.querySelector('#cs2SourceNote').textContent=d.data_source_note||'';
+    cs2Section.classList.remove('d-none');
+  }else{
+    cs2Section.classList.add('d-none');
   }
 
   document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
