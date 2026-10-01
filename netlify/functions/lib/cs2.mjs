@@ -171,7 +171,7 @@ export function cs2ModelProbability(teamA, teamB, format = 'bo3') {
   };
 }
 
-export function summarizeCs2MarketOdds(rows = []) {
+export function summarizeCs2MarketOdds(rows = [], teamAId = null, teamBId = null) {
   const relevant = rows
     .filter(row => row?.source === 'eo_market')
     .filter(row => row?.market_type === 'match_winner')
@@ -183,8 +183,12 @@ export function summarizeCs2MarketOdds(rows = []) {
 
   const latest = {};
   for (const row of relevant) {
-    const side = String(row.outcome_key).toLowerCase();
-    if (!latest[side]) latest[side] = row;
+    const participant = String(row?.participant_id || '');
+    let side = null;
+    if (teamAId && participant === String(teamAId)) side = 'home';
+    else if (teamBId && participant === String(teamBId)) side = 'away';
+    else side = String(row.outcome_key).toLowerCase();
+    if (['home', 'away'].includes(side) && !latest[side]) latest[side] = row;
   }
 
   if (!latest.home || !latest.away) return null;
@@ -200,7 +204,7 @@ export function summarizeCs2MarketOdds(rows = []) {
   };
 }
 
-export async function loadCs2MarketOdds(matchId) {
+export async function loadCs2MarketOdds(matchId, teamAId = null, teamBId = null) {
   if (!matchId) return null;
   const cacheKey = 'cs2:odds:' + matchId;
   const cached = cacheGet(cacheKey);
@@ -211,7 +215,7 @@ export async function loadCs2MarketOdds(matchId) {
     source: 'eo_market',
     limit: 200,
   });
-  const result = summarizeCs2MarketOdds(payload?.data || []);
+  const result = summarizeCs2MarketOdds(payload?.data || [], teamAId, teamBId);
   return cacheSet(cacheKey, result, 2 * 60 * 1000);
 }
 
@@ -228,7 +232,7 @@ export async function loadCs2PredictionData(selectedFixture) {
   const [teamA, teamB, marketOdds] = await Promise.all([
     loadCs2TeamRating(teamAId),
     loadCs2TeamRating(teamBId),
-    loadCs2MarketOdds(selectedFixture.event_id),
+    loadCs2MarketOdds(selectedFixture.event_id, teamAId, teamBId),
   ]);
 
   const model = cs2ModelProbability(teamA, teamB, selectedFixture.format || 'bo3');
