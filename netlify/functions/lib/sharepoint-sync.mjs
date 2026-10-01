@@ -21,6 +21,7 @@ function modelVersion(sport) {
     nba: 'nba-current-season-v1',
     nhl: 'nhl-poisson-v1',
     tennis: 'tennis-rolling-12m-elo-v1',
+    cs2: 'cs2-glicko2-series-v1',
   }[sport] || 'model-v1';
 }
 
@@ -28,6 +29,7 @@ function sourceEventKey(snapshot) {
   const fixtureId = snapshot?.match?.fixture_id;
   const eventId = snapshot?.match?.event_id;
   if (snapshot?.sport === 'cz_football' && fixtureId) return `apifootball:${fixtureId}`;
+  if (snapshot?.sport === 'cs2' && eventId) return `esportsodds:${eventId}`;
   if (eventId) return `oddsapi:${eventId}`;
   if (fixtureId) return `fixture:${fixtureId}`;
   return `tracker:${snapshot?.record_id || 'unknown'}`;
