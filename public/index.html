@@ -313,7 +313,7 @@ function renderFixtureMeta(){
 
   const parts=[formatMatchDate(event.commence_time),event.league,event.country,event.venue].filter(Boolean);
 
-  const seasonGated=['fifa','nba','nhl','tennis'].includes(sport.value);
+  const seasonGated=['fifa','nba','nhl','tennis','cs2'].includes(sport.value);
   if(seasonGated&&event.analysis_available===false){
     const countSource=sport.value==='tennis'
       ? event.current_form_matches
@@ -364,7 +364,7 @@ async function loadUpcoming(){
     fixture.innerHTML=events.map((event,index)=>{
       const when=formatMatchDate(event.commence_time)||'Datum neuvedeno';
       const league=event.league?' · '+event.league:'';
-      const seasonGated=['fifa','nba','nhl','tennis'].includes(sport.value);
+      const seasonGated=['fifa','nba','nhl','tennis','cs2'].includes(sport.value);
       const availability=seasonGated&&event.analysis_available===false
         ? ' · NEDOSTATEK DAT'
         : seasonGated&&event.data_status
@@ -663,7 +663,7 @@ function renderResult(d,event){
 async function predict(){
   const event=selectedEvent();
   if(!event)return;
-  if(['fifa','nba','nhl','tennis'].includes(sport.value)&&event.analysis_available===false){
+  if(['fifa','nba','nhl','tennis','cs2'].includes(sport.value)&&event.analysis_available===false){
     renderFixtureMeta();
     return;
   }
@@ -695,7 +695,7 @@ async function predict(){
   }finally{
     go.textContent='Analyzovat zápas';
     const current=selectedEvent();
-    go.disabled=Boolean(['fifa','nba','nhl','tennis'].includes(sport.value)&&current?.analysis_available===false);
+    go.disabled=Boolean(['fifa','nba','nhl','tennis','cs2'].includes(sport.value)&&current?.analysis_available===false);
   }
 }
 
