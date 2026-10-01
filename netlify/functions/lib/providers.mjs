@@ -1,6 +1,7 @@
 import { TEAM_MAPPING } from './data.mjs';
 import { fetchJson, ProviderError } from './http.mjs';
 import { enrichTennisUpcomingAvailability } from './tennis.mjs';
+import { listCs2Upcoming } from './cs2.mjs';
 const API_FOOTBALL_BASE=(process.env.API_FOOTBALL_BASE||'https://v3.football.api-sports.io').replace(/\/$/,'');const ODDS_API_BASE=(process.env.ODDS_API_BASE||'https://api.the-odds-api.com/v4').replace(/\/$/,'');const teamIdCache=new Map(),liveFootballCache=new Map(),fifaCurrentSeasonCache=new Map();let apiFootballSeasonRangeCache=null;
 export function liveDataEnabled(){return !['0','false','no','off'].includes(String(process.env.LIVE_DATA_ENABLED||'true').toLowerCase());}
 export function normName(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
@@ -1699,6 +1700,7 @@ export async function listUpcomingMatches(sport){
     const events=await listOddsUpcoming('tennis');
     return enrichTennisUpcomingAvailability(events);
   }
+  if(sport==='cs2')return listCs2Upcoming();
   throw new TypeError('Nepodporovaný sport.');
 }
 
