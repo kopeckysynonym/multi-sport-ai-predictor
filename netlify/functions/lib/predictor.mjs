@@ -1,6 +1,7 @@
 import { DEMO_DATA, DEMO_ODDS, SPORT_LABELS } from './data.mjs';
 import { clamp, expectedRoi, normalCdf, normalizedImpliedProbabilities, recommendation, round, scoreMatrix, valueBet } from './math.mjs';
 import { loadTennisPlayerModelData } from './tennis.mjs';
+import { loadCs2PredictionData } from './cs2.mjs';
 import {
   fetchEventOdds,
   findMatchOdds,
@@ -783,6 +784,105 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
   };
 }
 
+
+export async function predictCs2(aName, bName, supplied = null, selectedFixture = null) {
+  if (!selectedFixture?.event_id || !selectedFixture?.team_a_id || !selectedFixture?.team_b_id) {
+    throw Object.assign(
+      new Error('CS2 predikce vyžaduje konkrétní nadcházející EsportsOdds zápas.'),
+      { status: 422, code: 'CS2_FIXTURE_REQUIRED' }
+    );
+  }
+
+  const data = await loadCs2PredictionData(selectedFixture);
+  const pA = data.series_probability_a;
+  const pB = 1 - pA;
+  const predictedWinner = pA >= pB ? aName : bName;
+  const predictedWinnerProbability = Math.max(pA, pB);
+
+  const live = supplied || data.market_odds;
+  const actionable = Boolean(live);
+  const used = live || { home: 2, away: 2 };
+  const market = normalizedImpliedProbabilities({
+    home: Number(used.home || 0),
+    away: Number(used.away || 0)
+  });
+
+  const values = {
+    home: valueBet(pA, market.home ?? pA),
+    away: valueBet(pB, market.away ?? pB)
+  };
+  const roiValues = {
+    home: expectedRoi(pA, Number(used.home)),
+    away: expectedRoi(pB, Number(used.away))
+  };
+  const best = Object.entries(roiValues)
+    .filter(([, value]) => Number.isFinite(value))
+    .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
+
+  const betting = bettingFields({
+    values,
+    roiValues,
+    best,
+    used,
+    actionable,
+    limitedReliability: data.limited_reliability
+  });
+
+  if (actionable && !supplied) {
+    betting.is_actionable = false;
+    betting.value_informational_only = true;
+    betting.recommendation_allowed = false;
+    betting.recommendation = 'BEZ DOPORUČENÍ';
+    betting.recommendation_block_reason = 'ESPORTSODDS FAIR MARKET LINE – NEJDE O KURZ KONKRÉTNÍ SÁZKOVKY';
+  }
+
+  return {
+    sport: 'cs2',
+    sport_label: SPORT_LABELS.cs2,
+    model: 'Glicko-2 conservative rating + BO-series conversion',
+    team_a: aName,
+    team_b: bName,
+    selected_fixture: selectedFixture,
+    expected_score: null,
+    predicted_winner: predictedWinner,
+    predicted_winner_probability: round(predictedWinnerProbability * 100, 1),
+    probabilities: {
+      home: round(pA * 100, 1),
+      away: round(pB * 100, 1)
+    },
+    ...betting,
+    data_mode: 'esportsodds-glicko2',
+    data_season_label: null,
+    current_season_only: false,
+    odds_mode: supplied ? 'client-supplied' : data.market_odds ? 'esportsodds-eo-market' : 'unavailable',
+    odds_meta: supplied ? null : data.market_odds ? {
+      source: data.market_odds.source,
+      captured_at: data.market_odds.captured_at,
+      book_count: data.market_odds.book_count,
+      market_type: 'match_winner'
+    } : null,
+    match_date: selectedFixture.commence_time,
+    historical_match_range: data.historical_match_range,
+    limited_reliability: data.limited_reliability,
+    reliability_label: data.limited_reliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
+    data_matches_used: {
+      team_a: data.team_a.points_used,
+      team_b: data.team_b.points_used
+    },
+    cs2_team_stats: {
+      team_a: data.team_a,
+      team_b: data.team_b,
+      format: selectedFixture.format || 'bo3'
+    },
+    data_source_note: 'CS2 model používá poslední dostupné Glicko-2 ratingy a jejich nejistotu (RD), převádí pravděpodobnost mapy na BO1/BO3/BO5 sérii. Kurzy jsou de-vigovaná agregovaná eo_market line z EsportsOdds, nikoli nabídka konkrétní sázkové kanceláře.',
+    data_diagnostics: [],
+    odds_diagnostic: supplied || data.market_odds ? null : {
+      code: 'CS2_ODDS_UNAVAILABLE',
+      message: 'Pro tento CS2 zápas nejsou dostupné pre-match eo_market kurzy.'
+    }
+  };
+}
+
 export async function predictMatch(sport, a, b, odds = null, selectedFixture = null) {
   if (!sport || !a || !b) throw new TypeError('Chybí sport nebo tým.');
   if (a === b) throw new TypeError('Vyber dva různé týmy.');
@@ -790,5 +890,6 @@ export async function predictMatch(sport, a, b, odds = null, selectedFixture = n
   if (sport === 'nba') return predictNba(a, b, odds, selectedFixture);
   if (sport === 'nhl') return predictNhl(a, b, odds, selectedFixture);
   if (sport === 'tennis') return predictTennis(a, b, odds, selectedFixture);
+  if (sport === 'cs2') return predictCs2(a, b, odds, selectedFixture);
   throw new TypeError('Nepodporovaný sport.');
 }
