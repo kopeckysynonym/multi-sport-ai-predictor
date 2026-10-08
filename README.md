@@ -23,7 +23,7 @@ ODDS_SPORT_NBA=basketball_nba
 ODDS_SPORT_NHL=icehockey_nhl
 ODDS_SPORT_CZ_FOOTBALL=
 ODDS_SPORT_FIFA=
-ESPORTSODDS_API_KEY=...
+ODDSPAPI_API_KEY=...
 ```
 
 ## Main endpoints
@@ -256,16 +256,16 @@ The function validates required prediction fields, validates pre-match timestamp
 
 ## CS2 Esports
 
-CS2 uses the EsportsOdds API for fixtures, Glicko-2 ratings, match-winner market lines and completed-match settlement.
+CS2 uses OddsPapi v4 for fixtures, recent completed-series results, bookmaker match-winner odds and completed-match settlement.
 
 Required Netlify environment variable:
 
 ```text
-ESPORTSODDS_API_KEY=...
+ODDSPAPI_API_KEY=...
 ```
 
-The first CS2 model version uses each team's latest Glicko-2 rating and rating deviation (RD). It computes a conservative rating (`rating - 2 * RD`), converts the difference to a per-map win probability, and then converts that probability to the selected BO1 / BO3 / BO5 series format.
+The CS2 model uses up to the latest 5 completed series for each team before the selected fixture. It combines a smoothed recent-series win rate with recent map differential. At least 3 completed series are required for both teams; fewer than 5 keeps the prediction at limited reliability.
 
-CS2 Value Bet compares the model probability with EsportsOdds `eo_market`, a de-vigged aggregate market line. Because this is not an executable price from one named bookmaker, the app displays Edge and theoretical Expected ROI as informational metrics and does not emit a `SÁZET` recommendation from `eo_market` alone.
+CS2 Value Bet uses OddsPapi Winner market `171` and tracks a concrete bookmaker price. The default bookmaker preference is `pinnacle,bet365,1xbet`; it can be overridden with `ODDSPAPI_CS2_BOOKMAKERS`. Edge is calculated against the normalized two-way implied probability and Expected ROI against the tracked decimal price.
 
-Completed CS2 predictions are settled automatically from the same EsportsOdds match ID. Series score and winner are stored in Prediction Tracker and SharePoint. CS2 predictions using only `eo_market` are excluded from simulated betting P/L because no concrete bookmaker price was tracked.
+Completed CS2 predictions are settled automatically from the same OddsPapi fixture ID through `/v4/fixture` and `/v4/scores`. Series score, winner and simulated paper-bet P/L are stored in Prediction Tracker and SharePoint when a real bookmaker price was tracked.
