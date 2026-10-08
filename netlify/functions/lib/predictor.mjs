@@ -788,7 +788,7 @@ export async function predictTennis(aName, bName, supplied = null, selectedFixtu
 export async function predictCs2(aName, bName, supplied = null, selectedFixture = null) {
   if (!selectedFixture?.event_id || !selectedFixture?.team_a_id || !selectedFixture?.team_b_id) {
     throw Object.assign(
-      new Error('CS2 predikce vyžaduje konkrétní nadcházející EsportsOdds zápas.'),
+      new Error('CS2 predikce vyžaduje konkrétní nadcházející OddsPapi zápas.'),
       { status: 422, code: 'CS2_FIXTURE_REQUIRED' }
     );
   }
@@ -819,27 +819,10 @@ export async function predictCs2(aName, bName, supplied = null, selectedFixture 
     .filter(([, value]) => Number.isFinite(value))
     .sort((x, y) => y[1] - x[1])[0] || Object.entries(values).sort((x, y) => y[1] - x[1])[0];
 
-  const betting = bettingFields({
-    values,
-    roiValues,
-    best,
-    used,
-    actionable,
-    limitedReliability: data.limited_reliability
-  });
-
-  if (actionable && !supplied) {
-    betting.is_actionable = false;
-    betting.value_informational_only = true;
-    betting.recommendation_allowed = false;
-    betting.recommendation = 'BEZ DOPORUČENÍ';
-    betting.recommendation_block_reason = 'ESPORTSODDS FAIR MARKET LINE – NEJDE O KURZ KONKRÉTNÍ SÁZKOVKY';
-  }
-
   return {
     sport: 'cs2',
     sport_label: SPORT_LABELS.cs2,
-    model: 'Glicko-2 conservative rating + BO-series conversion',
+    model: 'Recent CS2 series form + map differential',
     team_a: aName,
     team_b: bName,
     selected_fixture: selectedFixture,
@@ -850,35 +833,44 @@ export async function predictCs2(aName, bName, supplied = null, selectedFixture 
       home: round(pA * 100, 1),
       away: round(pB * 100, 1)
     },
-    ...betting,
-    data_mode: 'esportsodds-glicko2',
+    ...bettingFields({
+      values,
+      roiValues,
+      best,
+      used,
+      actionable,
+      limitedReliability: data.limited_reliability
+    }),
+    data_mode: 'oddspapi-cs2-recent-series',
     data_season_label: null,
     current_season_only: false,
-    odds_mode: supplied ? 'client-supplied' : data.market_odds ? 'esportsodds-eo-market' : 'unavailable',
+    odds_mode: supplied ? 'client-supplied' : data.market_odds ? 'oddspapi-bookmaker' : 'unavailable',
     odds_meta: supplied ? null : data.market_odds ? {
       source: data.market_odds.source,
+      bookmaker: data.market_odds.bookmaker,
+      bookmaker_path: data.market_odds.bookmaker_path,
       captured_at: data.market_odds.captured_at,
       book_count: data.market_odds.book_count,
-      market_type: 'match_winner'
+      market_id: data.market_odds.market_id
     } : null,
     match_date: selectedFixture.commence_time,
     historical_match_range: data.historical_match_range,
+    data_age_days: data.data_age_days,
     limited_reliability: data.limited_reliability,
     reliability_label: data.limited_reliability ? 'OMEZENÁ SPOLEHLIVOST' : 'STANDARDNÍ SPOLEHLIVOST',
     data_matches_used: {
-      team_a: data.team_a.points_used,
-      team_b: data.team_b.points_used
+      team_a: data.team_a.matches_used,
+      team_b: data.team_b.matches_used
     },
     cs2_team_stats: {
       team_a: data.team_a,
-      team_b: data.team_b,
-      format: selectedFixture.format || 'bo3'
+      team_b: data.team_b
     },
-    data_source_note: 'CS2 model používá poslední dostupné Glicko-2 ratingy a jejich nejistotu (RD), převádí pravděpodobnost mapy na BO1/BO3/BO5 sérii. Kurzy jsou de-vigovaná agregovaná eo_market line z EsportsOdds, nikoli nabídka konkrétní sázkové kanceláře.',
+    data_source_note: 'CS2 model používá až 5 posledních dokončených sérií obou týmů z OddsPapi a jejich mapový rozdíl. Winner kurzy jsou z konkrétního bookmakeru v OddsPapi; při omezeném vzorku zůstává Value Bet pouze informativní.',
     data_diagnostics: [],
     odds_diagnostic: supplied || data.market_odds ? null : {
       code: 'CS2_ODDS_UNAVAILABLE',
-      message: 'Pro tento CS2 zápas nejsou dostupné pre-match eo_market kurzy.'
+      message: 'Pro tento CS2 zápas nejsou dostupné pre-match Winner kurzy u preferovaných bookmakerů.'
     }
   };
 }
