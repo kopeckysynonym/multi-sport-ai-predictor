@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check netlify/functions/predict.mjs && node --check netlify/functions/odds.mjs"
+    "check": "node --check netlify/functions/predict.mjs && node --check netlify/functions/odds.mjs && node --check netlify/functions/lib/cs2.mjs && node --check netlify/functions/lib/settlement.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "11.1.0"
