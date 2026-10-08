@@ -200,13 +200,16 @@ async function recentFixturesForTeam(teamId, targetDate, wanted = 5) {
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  const payload = await request('fixtures', {
-    participantId: teamId,
-    from: dateOnly(shiftDate(target, -120)),
-    to: dateOnly(target),
-    statusId: 2,
-    language: 'en',
-  });
+  let payload = [];
+  try {
+    payload = await request('fixtures', {
+      participantId: teamId,
+      statusId: 2,
+      language: 'en',
+    });
+  } catch (error) {
+    if (error?.code !== 'HTTP_404') throw error;
+  }
 
   const rows = (Array.isArray(payload) ? payload : [])
     .filter(row => completedFixture(row, targetMs))
