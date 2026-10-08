@@ -342,13 +342,10 @@ export async function settlePendingPredictions({ now = new Date(), limit = 100 }
       try {
         const score = await getCs2CompletedScore(snapshot.match.event_id);
         if (score) {
-          settlement = settlePaperBet(snapshot, score, 'esportsodds', now.toISOString());
-          if (settlement && snapshot?.odds_mode === 'esportsodds-eo-market') {
-            settlement = { ...settlement, simulated_bet: null };
-          }
+          settlement = settlePaperBet(snapshot, score, 'oddspapi', now.toISOString());
         }
       } catch (error) {
-        diagnostics.push({ record_id: snapshot.record_id, source: 'esportsodds', message: error.message });
+        diagnostics.push({ record_id: snapshot.record_id, source: 'oddspapi', message: error.message });
       }
     } else if (snapshot?.match?.event_id) {
       const event = oddsResults.get(String(snapshot.match.event_id));
