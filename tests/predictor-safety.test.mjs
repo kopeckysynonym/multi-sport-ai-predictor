@@ -11,7 +11,7 @@ import {
   summarizeApiFootballMatchWinner
 } from '../netlify/functions/lib/providers.mjs';
 import { bettingFields } from '../netlify/functions/lib/predictor.mjs';
-import { cs2ModelProbability, cs2SeriesProbability, summarizeCs2MarketOdds } from '../netlify/functions/lib/cs2.mjs';
+import { cs2RecentFormProbability, summarizeCs2MarketOdds } from '../netlify/functions/lib/cs2.mjs';
 import { buildPredictionSnapshot } from '../netlify/functions/lib/tracker.mjs';
 import { extractChanceLigaScoreFromHtml, settlePaperBet, trackerPerformanceSummary } from '../netlify/functions/lib/settlement.mjs';
 import {
@@ -322,39 +322,66 @@ test('tennis availability uses rolling 12-month thresholds instead of season res
 });
 
 
-test('CS2 BO-series conversion increases favorite probability in longer series', () => {
-  const bo1 = cs2SeriesProbability(0.6, 'bo1');
-  const bo3 = cs2SeriesProbability(0.6, 'bo3');
-  const bo5 = cs2SeriesProbability(0.6, 'bo5');
-  assert.ok(bo3 > bo1);
-  assert.ok(bo5 > bo3);
-});
-
-test('CS2 model uses conservative Glicko-2 ratings', () => {
-  const result = cs2ModelProbability(
-    { conservative_rating: 1700 },
-    { conservative_rating: 1500 },
-    'bo3'
+test('CS2 recent-form model favors stronger recent series results', () => {
+  const probability = cs2RecentFormProbability(
+    { matches_used: 5, wins: 4, map_diff_avg: 1.2 },
+    { matches_used: 5, wins: 1, map_diff_avg: -0.8 }
   );
-  assert.ok(result.map_probability_a > 0.5);
-  assert.ok(result.series_probability_a > result.map_probability_a);
+  assert.ok(probability > 0.5);
+  assert.ok(probability <= 0.88);
 });
 
-test('CS2 eo_market parser takes latest pre-match match-winner prices', () => {
-  const rows = [
-    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'home', price: 1.9, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 },
-    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'away', price: 2.1, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 },
-    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'home', price: 1.8, captured_at: '2026-09-30T10:00:00Z', in_play: false, book_count: 3 },
-    { source: 'eo_market', market_type: 'match_winner', map_number: null, outcome_key: 'away', price: 2.2, captured_at: '2026-09-30T10:00:00Z', in_play: false, book_count: 3 },
-    { source: 'eo_market', market_type: 'map_winner', map_number: 1, outcome_key: 'home', price: 1.7, captured_at: '2026-10-01T10:00:00Z', in_play: false, book_count: 4 }
-  ];
-  assert.deepEqual(summarizeCs2MarketOdds(rows), {
-    home: 1.9,
-    away: 2.1,
-    captured_at: '2026-10-01T10:00:00Z',
-    book_count: 4,
-    source: 'eo_market'
-  });
+test('CS2 OddsPapi parser reads Winner market 171 from a real bookmaker', () => {
+  const oldBooks = process.env.ODDSPAPI_CS2_BOOKMAKERS;
+  process.env.ODDSPAPI_CS2_BOOKMAKERS = 'pinnacle,bet365,1xbet';
+  try {
+    const payload = {
+      bookmakerOdds: {
+        bet365: {
+          bookmakerIsActive: true,
+          suspended: false,
+          fixturePath: 'https://example.test/bet365',
+          markets: {
+            '171': {
+              marketActive: true,
+              outcomes: {
+                '171': { players: { '0': { active: true, price: 1.95, changedAt: '2026-10-08T10:00:00Z' } } },
+                '172': { players: { '0': { active: true, price: 1.85, changedAt: '2026-10-08T10:00:00Z' } } }
+              }
+            }
+          }
+        },
+        pinnacle: {
+          bookmakerIsActive: true,
+          suspended: false,
+          fixturePath: 'https://example.test/pinnacle',
+          markets: {
+            '171': {
+              marketActive: true,
+              outcomes: {
+                '171': { players: { '0': { active: true, price: 2.05, changedAt: '2026-10-08T10:05:00Z' } } },
+                '172': { players: { '0': { active: true, price: 1.80, changedAt: '2026-10-08T10:05:00Z' } } }
+              }
+            }
+          }
+        }
+      }
+    };
+
+    assert.deepEqual(summarizeCs2MarketOdds(payload), {
+      home: 2.05,
+      away: 1.8,
+      bookmaker: 'pinnacle',
+      bookmaker_path: 'https://example.test/pinnacle',
+      captured_at: '2026-10-08T10:05:00Z',
+      market_id: 171,
+      book_count: 2,
+      source: 'oddspapi'
+    });
+  } finally {
+    if (oldBooks === undefined) delete process.env.ODDSPAPI_CS2_BOOKMAKERS;
+    else process.env.ODDSPAPI_CS2_BOOKMAKERS = oldBooks;
+  }
 });
 
 test('automatic settlement computes one-unit simulated win and loss correctly', () => {
