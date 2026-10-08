@@ -145,8 +145,8 @@
     </div>
 
     <div id="cs2StatsSection" class="mt-4 d-none">
-      <h5>CS2 – Glicko-2 síla týmů</h5>
-      <p class="mb-2">Formát série: <strong id="cs2Format">–</strong></p>
+      <h5>CS2 – poslední dokončené série</h5>
+      <p class="mb-2">Kurzový zdroj: <strong id="cs2Bookmaker">–</strong></p>
       <div class="table-responsive">
         <table class="table table-dark table-sm align-middle mb-2">
           <thead>
@@ -630,12 +630,12 @@ function renderResult(d,event){
     const bStats=d.cs2_team_stats.team_b;
     document.querySelector('#cs2TeamAHeader').textContent=d.team_a;
     document.querySelector('#cs2TeamBHeader').textContent=d.team_b;
-    document.querySelector('#cs2Format').textContent=String(d.cs2_team_stats.format||'bo3').toUpperCase();
+    document.querySelector('#cs2Bookmaker').textContent=d.odds_meta?.bookmaker||'kurz není dostupný';
     const rows=[
-      ['Glicko-2 rating',metricValue(aStats.rating),metricValue(bStats.rating)],
-      ['Rating deviation (RD)',metricValue(aStats.rd),metricValue(bStats.rd)],
-      ['Conservative rating',metricValue(aStats.conservative_rating),metricValue(bStats.conservative_rating)],
-      ['Rating bodů ve vzorku',aStats.points_used,bStats.points_used]
+      ['Použité série',aStats.matches_used,bStats.matches_used],
+      ['Bilance',aStats.wins+'-'+aStats.losses,bStats.wins+'-'+bStats.losses],
+      ['Win rate',metricValue(aStats.win_pct,'%'),metricValue(bStats.win_pct,'%')],
+      ['Průměrný mapový rozdíl',signedMetric(aStats.map_diff_avg,''),signedMetric(bStats.map_diff_avg,'')]
     ];
     document.querySelector('#cs2StatsBody').innerHTML=rows
       .map(row=>`<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`)
@@ -646,7 +646,8 @@ function renderResult(d,event){
     cs2Section.classList.add('d-none');
   }
 
-  document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode;
+  const bookmakerText=d.sport==='cs2'&&d.odds_meta?.bookmaker ? ' ('+d.odds_meta.bookmaker+')' : '';
+  document.querySelector('#modes').textContent='Data: '+d.data_mode+' | Kurzy: '+d.odds_mode+bookmakerText;
   if(d.tracker?.saved){
     trackerStatus.textContent='Prediction Tracker: predikce byla uložena před zápasem.';
   }else if(d.tracker?.reason==='MATCH_ALREADY_STARTED_OR_DATE_MISSING'){
