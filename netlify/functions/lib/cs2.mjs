@@ -111,7 +111,12 @@ function completedFixture(row, targetMs) {
 }
 
 function aggregateScore(payload) {
-  const row = payload?.scores?.['0'] ?? payload?.scores?.[0] ?? null;
+  const row =
+    payload?.scores?.periods?.result ??
+    payload?.scores?.result ??
+    payload?.scores?.['0'] ??
+    payload?.scores?.[0] ??
+    null;
   const home = Number(row?.participant1Score);
   const away = Number(row?.participant2Score);
   if (!Number.isFinite(home) || !Number.isFinite(away)) return null;
@@ -219,9 +224,14 @@ async function scoreForFixture(fixtureId) {
   const cacheKey = 'cs2:score:' + fixtureId;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
-  const payload = await request('scores', { fixtureId });
-  const score = aggregateScore(payload);
-  return cacheSet(cacheKey, score, 24 * 60 * 60 * 1000);
+  try {
+    const payload = await request('scores', { fixtureId });
+    const score = aggregateScore(payload);
+    return cacheSet(cacheKey, score, 24 * 60 * 60 * 1000);
+  } catch (error) {
+    if (error?.code === 'HTTP_404') return null;
+    throw error;
+  }
 }
 
 function summarizeTeamForm(teamId, fixtures, scoresById) {
@@ -341,15 +351,19 @@ export async function loadCs2MarketOdds(fixtureId) {
     .slice(0, 3)
     .join(',');
 
-  const payload = await request('odds', {
-    fixtureId,
-    bookmakers,
-    oddsFormat: 'decimal',
-    language: 'en',
-    verbosity: 3,
-  });
-
-  return cacheSet(cacheKey, summarizeCs2MarketOdds(payload), 2 * 60 * 1000);
+  try {
+    const payload = await request('odds', {
+      fixtureId,
+      bookmakers,
+      oddsFormat: 'decimal',
+      language: 'en',
+      verbosity: 3,
+    });
+    return cacheSet(cacheKey, summarizeCs2MarketOdds(payload), 2 * 60 * 1000);
+  } catch (error) {
+    if (error?.code === 'HTTP_404') return null;
+    throw error;
+  }
 }
 
 export async function loadCs2PredictionData(selectedFixture) {
@@ -434,6 +448,11 @@ export async function getCs2CompletedScore(fixtureId) {
     return null;
   }
 
-  const payload = await request('scores', { fixtureId });
-  return aggregateScore(payload);
+  try {
+    const payload = await request('scores', { fixtureId });
+    return aggregateScore(payload);
+  } catch (error) {
+    if (error?.code === 'HTTP_404') return null;
+    throw error;
+  }
 }
